@@ -1,0 +1,19 @@
+{
+  "name": "69书吧",
+  "domains": ["69shu.me", "69shu.top", "69shuba.cx", "69shuba.com"],
+  "catalog": {
+    "list_selector": ".chapterlist li a, #catalog li a, .catalog li a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": "h1, .content h1",
+    "body_selector": "#txtcontent, .txtnav, .content",
+    "remove_selectors": [".ad_content", ".bottom-link", "script", "style", ".hide720", ".show720"],
+    "clean_regexes": [
+      "69书吧.*",
+      "请记住本书首发域名.*",
+      "最新网址.*"
+    ]
+  }
+}

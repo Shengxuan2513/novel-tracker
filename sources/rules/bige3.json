@@ -1,0 +1,19 @@
+{
+  "name": "笔趣阁3",
+  "domains": ["bige3.cc", "bige3.com", "biquge3.cc", "biquge.tv"],
+  "catalog": {
+    "list_selector": ".listmain dd a, .chapter-list a, #list dd a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": "h1, .content h1",
+    "body_selector": "#content, #chaptercontent, .showtxt",
+    "remove_selectors": ["script", "style", ".readinline", ".bottem"],
+    "clean_regexes": [
+      "笔趣阁.*最新章节.*",
+      "请记住本书首发.*",
+      "www\\.bige3\\.cc"
+    ]
+  }
+}

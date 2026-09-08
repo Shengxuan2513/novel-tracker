@@ -33,6 +33,7 @@ SIDEBAR_COMPONENT_PATTERNS = [
     re.compile(r'^.*(?:仙侠|都市|玄幻|武侠|历史|科幻|网游)(?:连载|完结)\d+(\.\d+)?万字.*$', re.IGNORECASE),
     re.compile(r'^更新至[：:].*$', re.IGNORECASE),
     re.compile(r'^展开\s+.*$', re.IGNORECASE),
+    re.compile(r'^.*?(?:小说推荐阅读|小说推荐|热门推荐)[：:].*$', re.IGNORECASE),
     re.compile(r'^-\s*(?:免费|会员).*$', re.IGNORECASE),
     re.compile(r'^本书数字版权由.*?制作发行.*$', re.IGNORECASE),
 ]

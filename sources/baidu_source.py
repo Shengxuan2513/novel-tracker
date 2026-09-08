@@ -45,9 +45,9 @@ class BaiduSearchSource(BaseSource):
                     title_text = h3.get_text(strip=True)
                     a_tag = h3.find("a")
                     page_url = a_tag.get("href", "") if a_tag else ""
-                    body_text = item.get_text(" ", strip=True)
-
-                    if novel_name not in body_text and novel_name not in title_text:
+                    clean_book = re.sub(r'[\(（《》）\s]', '', novel_name)
+                    clean_title = re.sub(r'[\(（《》）\s]', '', title_text)
+                    if clean_book not in clean_title:
                         continue
 
                     # Search for chapter regex

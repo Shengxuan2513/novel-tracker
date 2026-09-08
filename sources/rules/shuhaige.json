@@ -1,0 +1,18 @@
+{
+  "name": "书海阁",
+  "domains": ["shuhaige.net", "shuhaige.com", "shuhaige.cc"],
+  "catalog": {
+    "list_selector": "#list dd a, .info-chapters a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": ".bookname h1, h1",
+    "body_selector": "#content",
+    "remove_selectors": ["script", "style", ".bottem", ".ad"],
+    "clean_regexes": [
+      "书海阁.*最新章节.*",
+      "shuhaige\\.net"
+    ]
+  }
+}

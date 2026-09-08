@@ -1,0 +1,18 @@
+{
+  "name": "89文学",
+  "domains": ["89wx.cc", "89wx.com"],
+  "catalog": {
+    "list_selector": ".read_list li a, .chapterlist li a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": "h1",
+    "body_selector": "#content, .content",
+    "remove_selectors": ["script", "style", ".read_btn"],
+    "clean_regexes": [
+      "89文学.*最新章节.*",
+      "89wx\\.cc"
+    ]
+  }
+}

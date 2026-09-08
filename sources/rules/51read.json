@@ -1,0 +1,18 @@
+{
+  "name": "51小说",
+  "domains": ["51read.org", "51read.net", "m.51read.org"],
+  "catalog": {
+    "list_selector": ".chapter-list li a, .dir-list li a, #chapterlist a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": "h1.title, .chapter-title",
+    "body_selector": "#content, .article-content, .read-content",
+    "remove_selectors": ["script", "style", ".ad", ".banner", ".page-nav"],
+    "clean_regexes": [
+      "51小说.*无弹窗.*",
+      "51read\\.org"
+    ]
+  }
+}

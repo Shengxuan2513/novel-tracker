@@ -43,7 +43,7 @@ class TestUniversalComponents(unittest.TestCase):
         </html>
         """
         soup = BeautifulSoup(sample_html, "html.parser")
-        meta = self.catalog_extractor.extract_metadata_from_soup(soup, "http://test.com")
+        meta = self.catalog_extractor.extract_novel_meta(soup)
         self.assertEqual(meta["title"], "赤心巡天")
         self.assertEqual(meta["author"], "情何以甚")
 

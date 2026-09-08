@@ -1,0 +1,19 @@
+{
+  "name": "新笔趣微",
+  "domains": ["xbiquwx.la", "xbiquge.la", "biquwx.la"],
+  "catalog": {
+    "list_selector": "#list dd a, .box_con #list a",
+    "title_attr": "text",
+    "url_attr": "href"
+  },
+  "content": {
+    "title_selector": ".bookname h1",
+    "body_selector": "#content",
+    "remove_selectors": ["script", "style", ".bottem2", "p[style*='color:red']"],
+    "clean_regexes": [
+      "新笔趣阁.*最快更新.*",
+      "请收藏本站.*",
+      "http://www\\.xbiquwx\\.la"
+    ]
+  }
+}

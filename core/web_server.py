@@ -15,6 +15,9 @@ from core.tracker import NovelTracker
 from sources.manager import SourceManager
 from core.notifier import Notifier
 from core.universal_engine import UniversalNovelExtractor
+from core.source_cache import SourceCache
+from core.heuristic_catalog import HeuristicCatalogExtractor
+from core.official_probe import OfficialProgressProber
 
 
 HTML_DASHBOARD = r"""<!DOCTYPE html>
@@ -33,8 +36,8 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             --primary-hover: #2563eb;
             --accent: #8b5cf6;
             --success: #10b981;
-            --warning: #f59e0b;
             --danger: #ef4444;
+            --warning: #f59e0b;
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
         }
@@ -43,43 +46,43 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
         }
 
         body {
-            background-color: var(--bg);
-            background-image: radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
-                              radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
-            background-attachment: fixed;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
             color: var(--text-main);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
-        /* Top Navbar */
+        /* Top Navigation Bar */
         .navbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 32px;
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15, 23, 42, 0.85);
             backdrop-filter: blur(12px);
             border-bottom: 1px solid var(--border);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             position: sticky;
             top: 0;
             z-index: 100;
         }
 
         .brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
             font-size: 20px;
             font-weight: 700;
             background: linear-gradient(135deg, #60a5fa, #c084fc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .nav-tabs {
@@ -90,14 +93,14 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         .nav-tab {
             padding: 8px 16px;
             border-radius: 8px;
-            cursor: pointer;
             font-size: 14px;
             font-weight: 500;
             color: var(--text-muted);
+            cursor: pointer;
             transition: all 0.2s;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
         }
 
         .nav-tab:hover {
@@ -110,22 +113,22 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             background: var(--primary);
         }
 
-        /* Main Container */
+        /* Container Layout */
         .container {
             max-width: 1200px;
-            width: 100%;
             margin: 32px auto;
-            padding: 0 20px;
+            padding: 0 24px;
+            width: 100%;
             flex: 1;
         }
 
         .tab-content {
             display: none;
-            animation: fadeIn 0.3s ease;
         }
 
         .tab-content.active {
             display: block;
+            animation: fadeIn 0.3s ease-in-out;
         }
 
         @keyframes fadeIn {
@@ -133,7 +136,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* Glassmorphism Cards */
+        /* Card Elements */
         .card {
             background: var(--card-bg);
             backdrop-filter: blur(16px);
@@ -141,27 +144,26 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             border-radius: 16px;
             padding: 24px;
             margin-bottom: 24px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
         }
 
         .card-header {
             display: flex;
-            align-items: center;
             justify-content: space-between;
+            align-items: center;
             margin-bottom: 20px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--border);
         }
 
         .card-title {
             font-size: 18px;
             font-weight: 600;
+            color: #fff;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
         }
 
-        /* Form Inputs */
+        /* Inputs and Buttons */
         .form-group {
             margin-bottom: 16px;
         }
@@ -169,46 +171,43 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         .form-label {
             display: block;
             font-size: 13px;
+            font-weight: 500;
             color: var(--text-muted);
             margin-bottom: 6px;
-            font-weight: 500;
-        }
-
-        .form-control {
-            width: 100%;
-            padding: 12px 16px;
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: #fff;
-            font-size: 14px;
-            outline: none;
-            transition: all 0.2s;
-        }
-
-        .form-control:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
         }
 
         .input-group {
             display: flex;
-            gap: 12px;
+            gap: 8px;
         }
 
-        /* Buttons */
+        .form-control {
+            flex: 1;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary);
+        }
+
         .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 12px 20px;
-            border-radius: 10px;
+            padding: 10px 20px;
+            border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
-            cursor: pointer;
             border: none;
+            cursor: pointer;
             transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
 
         .btn-primary {
@@ -218,61 +217,62 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
 
         .btn-primary:hover {
             background: var(--primary-hover);
-            transform: translateY(-1px);
         }
 
-        .btn-success {
-            background: var(--success);
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
             color: #fff;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
         }
 
         .btn-danger {
             background: rgba(239, 68, 68, 0.2);
-            color: var(--danger);
+            color: #f87171;
             border: 1px solid rgba(239, 68, 68, 0.3);
         }
 
         .btn-danger:hover {
-            background: var(--danger);
-            color: #fff;
+            background: rgba(239, 68, 68, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         /* Checkbox & Options */
         .checkbox-group {
             display: flex;
             gap: 16px;
-            margin: 12px 0 20px;
+            margin-bottom: 16px;
         }
 
         .checkbox-label {
+            font-size: 13px;
+            color: #cbd5e1;
             display: flex;
             align-items: center;
-            gap: 8px;
-            font-size: 13px;
+            gap: 6px;
             cursor: pointer;
-            color: var(--text-muted);
         }
 
-        .checkbox-label input[type="checkbox"] {
-            accent-color: var(--primary);
-            width: 16px;
-            height: 16px;
-        }
-
-        /* Progress Box */
-        .log-box {
+        /* Terminal Logs Output */
+        .log-terminal {
             background: #090d16;
-            border: 1px solid var(--border);
-            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
             padding: 16px;
-            font-family: Consolas, monospace;
-            font-size: 13px;
+            font-family: "Cascadia Code", "Fira Code", Consolas, Courier, monospace;
+            font-size: 12px;
             line-height: 1.6;
             color: #38bdf8;
-            height: 220px;
+            max-height: 380px;
             overflow-y: auto;
             white-space: pre-wrap;
-            margin-top: 16px;
+            word-break: break-all;
         }
 
         /* Bookshelf Grid */
@@ -417,12 +417,19 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                         <input type="number" id="extract-start" class="form-control" value="1" min="1">
                     </div>
                     <div style="flex: 1;">
-                        <label class="form-label">最大提取章节数（留空为全本）：</label>
-                        <input type="number" id="extract-limit" class="form-control" placeholder="留空默认抓取全本">
+                        <label class="form-label">最大提取章节数（可选）：</label>
+                        <input type="number" id="extract-limit" class="form-control" placeholder="默认全本">
                     </div>
                 </div>
-                <label class="form-label">实时抓取与清洗日志：</label>
-                <div class="log-box" id="extract-log">就绪。请输入小说名称或 URL 后点击“开始提取”...</div>
+            </div>
+
+            <!-- Terminal Realtime Logs -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title"><i class="fa fa-terminal"></i> 提取过程实时终端回显</div>
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="clearLogs()"><i class="fa fa-trash"></i> 清屏</button>
+                </div>
+                <div id="log-box" class="log-terminal">等待输入任务中...</div>
             </div>
         </div>
 
@@ -430,17 +437,15 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
         <div id="tab-bookshelf" class="tab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title"><i class="fa fa-list-ul"></i> 追更书架列表</div>
-                    <div style="display: flex; gap: 8px;">
-                        <button class="btn btn-success" onclick="checkAllUpdates()"><i class="fa fa-refresh"></i> 一键检查更新</button>
-                    </div>
+                    <div class="card-title"><i class="fa fa-bookmark"></i> 追更书架列表</div>
+                    <button class="btn btn-primary" onclick="checkAllUpdates()"><i class="fa fa-refresh"></i> 一键检查更新</button>
                 </div>
                 <div class="input-group" style="margin-bottom: 20px;">
-                    <input type="text" id="follow-name" class="form-control" placeholder="输入要添加追更的小说名称...">
+                    <input type="text" id="follow-name" class="form-control" placeholder="输入要添加追更的小说名称..">
                     <button class="btn btn-primary" onclick="addFollowBook()"><i class="fa fa-plus"></i> 添加追更</button>
                 </div>
-                <div class="book-grid" id="bookshelf-list">
-                    <div style="color: var(--text-muted); font-size: 13px;">加载中...</div>
+                <div id="bookshelf-list" class="book-grid">
+                    <!-- Dynamic Bookshelf Cards -->
                 </div>
             </div>
         </div>
@@ -517,18 +522,18 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                 return;
             }
 
-            const fmts = [];
-            if (document.getElementById('fmt-epub').checked) fmts.push('epub');
-            if (document.getElementById('fmt-txt').checked) fmts.push('txt');
-            if (document.getElementById('fmt-json').checked) fmts.push('json');
-            if (fmts.length === 0) fmts.push('txt');
+            const formats = [];
+            if (document.getElementById('fmt-epub').checked) formats.push('epub');
+            if (document.getElementById('fmt-txt').checked) formats.push('txt');
+            if (document.getElementById('fmt-json').checked) formats.push('json');
 
-            const startCh = parseInt(document.getElementById('extract-start').value) || 1;
+            const start = parseInt(document.getElementById('extract-start').value) || 1;
             const limitVal = document.getElementById('extract-limit').value.trim();
-            const limitCh = limitVal ? parseInt(limitVal) : null;
+            const limit = limitVal ? parseInt(limitVal) : null;
 
-            const logBox = document.getElementById('extract-log');
-            logBox.innerText = `🚀 正在初始化提取任务: ${target}...\n`;
+            const logBox = document.getElementById('log-box');
+            logBox.innerText = '正在建立实时连接...\n';
+
             const btn = document.getElementById('btn-start-extract');
             btn.disabled = true;
 
@@ -538,22 +543,22 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         target: target,
-                        formats: fmts,
-                        start: startCh,
-                        limit: limitCh
+                        formats: formats,
+                        start: start,
+                        limit: limit
                     })
                 });
 
                 const reader = response.body.getReader();
-                const decoder = new TextDecoder();
+                const decoder = new TextDecoder('utf-8');
+
                 while (true) {
-                    const { value, done } = await reader.read();
+                    const { done, value } = await reader.read();
                     if (done) break;
                     const chunk = decoder.decode(value, { stream: true });
                     logBox.innerText += chunk;
                     logBox.scrollTop = logBox.scrollHeight;
                 }
-                showToast('🎉 提取任务已完成！');
             } catch (err) {
                 logBox.innerText += `\n❌ 请求发生异常: ${err}\n`;
             } finally {
@@ -567,27 +572,48 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             container.innerHTML = '<div style="color: var(--text-muted); font-size: 13px;">正在加载书架...</div>';
             try {
                 const res = await fetch('/api/bookshelf');
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const data = await res.json();
                 if (!data.books || data.books.length === 0) {
                     container.innerHTML = '<div style="color: var(--text-muted); font-size: 13px;">书架空空如也，快在上方添加一本吧！</div>';
                     return;
                 }
-                container.innerHTML = data.books.map(b => `
-                    <div class="book-card">
-                        <div class="book-header">
-                            <div class="book-name">《${b.name}》</div>
-                            <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="removeFollow('${b.name}')">移除</button>
+                container.innerHTML = data.books.map(b => {
+                    let gapBadge = '';
+                    if (b.gap_chapters === 0) {
+                        gapBadge = '<span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);"><i class="fa fa-check-circle"></i> 已与官方同步</span>';
+                    } else if (b.gap_chapters > 0) {
+                        gapBadge = `<span class="badge" style="background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4);"><i class="fa fa-clock-o"></i> 开放源落后 ${b.gap_chapters} 章 (VIP连载中)</span>`;
+                    }
+                    return `
+                        <div class="book-card">
+                            <div class="book-header">
+                                <div class="book-name">《${b.name}》 <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">作者: ${b.author || '未知'}</span></div>
+                                <button class="btn btn-danger" style="padding: 3px 8px; font-size: 11px;" onclick="removeFollow('${b.name}')">移除</button>
+                            </div>
+                            <div class="book-meta">
+                                <div style="margin-bottom: 6px; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 8px;">
+                                    <div style="font-size: 11px; color: #fbbf24; margin-bottom: 2px;"><i class="fa fa-star"></i> <strong>官方正版最新:</strong></div>
+                                    <div style="font-size: 13px; color: #fef08a; font-weight: 600;">${b.official_chapter || '同步中...'}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${b.official_source || '官方平台'}</div>
+                                </div>
+                                <div style="margin-bottom: 6px; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 8px;">
+                                    <div style="font-size: 11px; color: #60a5fa; margin-bottom: 2px;"><i class="fa fa-download"></i> <strong>开放书源可下载:</strong></div>
+                                    <div style="font-size: 13px; color: #93c5fd; font-weight: 600;">${b.crawlable_chapter || b.last_known_chapter_title || '暂无数据'}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${b.crawlable_source || b.source_name || '全网聚合'}</div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                                    <div>${gapBadge}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted);">${b.last_checked || '尚未检查'}</div>
+                                </div>
+                            </div>
+                            <div class="book-actions" style="margin-top: 10px; display: flex; gap: 8px;">
+                                <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; flex: 1;" onclick="extractDirectly('${b.name}')"><i class="fa fa-download"></i> 导出全本</button>
+                                <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;" onclick="switchTab('tab-relay')"><i class="fa fa-shield"></i> 抗盾接力</button>
+                            </div>
                         </div>
-                        <div class="book-meta">
-                            <div>最新章节: <span style="color: #60a5fa;">${b.last_known_chapter_title || '暂无数据'}</span></div>
-                            <div>数据来源: ${b.source_name || '全网聚合'}</div>
-                            <div>上次检查: ${b.last_checked || '尚未检查'}</div>
-                        </div>
-                        <div class="book-actions">
-                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; flex: 1;" onclick="extractDirectly('${b.name}')"><i class="fa fa-download"></i> 导出全本</button>
-                        </div>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
             } catch (err) {
                 container.innerHTML = `<div style="color: var(--danger); font-size: 13px;">加载失败: ${err}</div>`;
             }
@@ -674,6 +700,9 @@ class WebApp:
         self.output_dir = output_dir
         self.tracker = NovelTracker()
         self.sources_manager = SourceManager()
+        self.source_cache = SourceCache()
+        self.catalog_extractor = HeuristicCatalogExtractor()
+        self.official_prober = OfficialProgressProber()
         self.notifier = Notifier()
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -681,35 +710,154 @@ class WebApp:
         return web.Response(text=HTML_DASHBOARD, content_type="text/html", charset="utf-8")
 
     async def handle_get_bookshelf(self, request: web.Request) -> web.Response:
-        books = self.tracker.get_all_novels()
-        return web.json_response({"books": books})
+        books = self.tracker.get_all()
+        formatted_books = []
+        for b in books:
+            formatted_books.append({
+                "name": b.get("book_name", ""),
+                "author": b.get("author", "未知"),
+                "official_chapter": b.get("official_chapter", b.get("last_known_chapter", "暂无数据")),
+                "official_source": b.get("official_source", "官方首发站"),
+                "official_url": b.get("official_url", ""),
+                "official_time": b.get("official_time", "正版连载中"),
+                "crawlable_chapter": b.get("crawlable_chapter", b.get("last_known_chapter", "暂无数据")),
+                "crawlable_source": b.get("crawlable_source", b.get("source_name", "全网聚合")),
+                "last_known_chapter_title": b.get("last_known_chapter", "暂无数据"),
+                "source_name": b.get("source_name", "全网聚合"),
+                "gap_chapters": b.get("gap_chapters", 0),
+                "last_checked": b.get("last_checked_at", "尚未检查")
+            })
+        return web.json_response({"books": formatted_books})
 
     async def handle_add_bookshelf(self, request: web.Request) -> web.Response:
         data = await request.json()
         name = data.get("name", "").strip()
         if name:
-            self.tracker.add_novel(name)
+            # 1. Concurrent official probe
+            off_task = asyncio.create_task(self.official_prober.probe(name))
+
+            # 2. Probe crawlable source
+            author = "未知"
+            c_chap = ""
+            c_num = 0.0
+            c_url = ""
+            c_src = "全网聚合"
+            cat_url = ""
+
+            cached = self.source_cache.get(name)
+            if cached and cached.get("catalog_url"):
+                try:
+                    meta, chaps = await self.catalog_extractor.discover_catalog(cached["catalog_url"])
+                    if chaps:
+                        last_chap = chaps[-1]
+                        author = meta.get("author", cached.get("author", "未知"))
+                        c_chap = last_chap[1]
+                        c_num = last_chap[3]
+                        c_url = last_chap[2]
+                        c_src = cached.get("source_name", "全网聚合")
+                        cat_url = cached["catalog_url"]
+                except Exception:
+                    pass
+
+            if not c_chap:
+                best, _ = await self.sources_manager.search_novel(name)
+                if best:
+                    author = best.author
+                    c_chap = best.latest_chapter_title
+                    c_num = best.latest_chapter_num
+                    c_url = best.latest_chapter_url
+                    c_src = best.source_name
+
+            # Wait for official probe
+            off_info = await off_task
+            self.tracker.add_book(
+                book_name=name,
+                author=author,
+                latest_chapter=c_chap,
+                latest_chapter_num=c_num,
+                latest_chapter_url=c_url,
+                source_name=c_src,
+                official_chapter=off_info.get("official_chapter", ""),
+                official_chapter_num=off_info.get("official_num", 0.0),
+                official_source=off_info.get("official_source", ""),
+                official_url=off_info.get("official_url", ""),
+                official_time=off_info.get("official_time", ""),
+                crawlable_chapter=c_chap,
+                crawlable_chapter_num=c_num,
+                crawlable_source=c_src,
+                catalog_url=cat_url
+            )
         return web.json_response({"status": "success"})
 
     async def handle_remove_bookshelf(self, request: web.Request) -> web.Response:
         data = await request.json()
         name = data.get("name", "").strip()
         if name:
-            self.tracker.remove_novel(name)
+            self.tracker.remove_book(name)
         return web.json_response({"status": "success"})
 
     async def handle_check_bookshelf(self, request: web.Request) -> web.Response:
-        books = self.tracker.get_all_novels()
+        books = self.tracker.get_all()
         for b in books:
-            name = b["name"]
-            best = await self.sources_manager.search_latest_chapter(name)
-            if best and best.latest_chapter_title:
-                self.tracker.update_novel_status(
-                    name=name,
-                    new_chapter_title=best.latest_chapter_title,
-                    new_chapter_num=best.latest_chapter_num,
-                    new_chapter_url=best.latest_chapter_url,
-                    source_name=best.source_name
+            name = b.get("book_name", "")
+            if not name:
+                continue
+
+            off_task = asyncio.create_task(self.official_prober.probe(name))
+
+            c_chap = ""
+            c_num = 0.0
+            c_url = ""
+            c_src = "全网聚合"
+            cat_url = ""
+
+            # 1. Check SourceCache first
+            cached = self.source_cache.get(name)
+            if cached and cached.get("catalog_url"):
+                try:
+                    meta, chaps = await self.catalog_extractor.discover_catalog(cached["catalog_url"])
+                    if chaps:
+                        last_chap = chaps[-1]
+                        c_chap = last_chap[1]
+                        c_num = last_chap[3]
+                        c_url = last_chap[2]
+                        c_src = cached.get("source_name", "全网聚合")
+                        cat_url = cached["catalog_url"]
+                except Exception:
+                    pass
+
+            # 2. Fallback to SourceManager
+            if not c_chap:
+                best, _ = await self.sources_manager.search_novel(name)
+                if best:
+                    c_chap = best.latest_chapter_title
+                    c_num = best.latest_chapter_num
+                    c_url = best.latest_chapter_url
+                    c_src = best.source_name
+
+            off_info = await off_task
+            is_new, old_title = self.tracker.check_and_update(
+                book_name=name,
+                new_chapter_title=c_chap,
+                new_chapter_num=c_num,
+                new_chapter_url=c_url,
+                source_name=c_src,
+                official_chapter=off_info.get("official_chapter", ""),
+                official_chapter_num=off_info.get("official_num", 0.0),
+                official_source=off_info.get("official_source", ""),
+                official_url=off_info.get("official_url", ""),
+                official_time=off_info.get("official_time", ""),
+                crawlable_chapter=c_chap,
+                crawlable_chapter_num=c_num,
+                crawlable_source=c_src,
+                catalog_url=cat_url
+            )
+            if is_new:
+                self.notifier.notify_update(
+                    book_name=name,
+                    new_chapter=c_chap,
+                    old_chapter=old_title,
+                    source_url=c_url
                 )
         return web.json_response({"status": "success"})
 
@@ -776,7 +924,8 @@ class WebApp:
                 formats=formats,
                 start_chapter=start,
                 limit_chapters=limit,
-                custom_output_dir=self.output_dir
+                custom_output_dir=self.output_dir,
+                log_callback=stream_print
             )
             await stream_print("\n🎉 全流程提取完成！")
             for fmt, path in results.items():

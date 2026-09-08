@@ -30,7 +30,10 @@ class TxtFormatter:
                 f.write(f"提取来源：{source_url}\n")
             f.write("=" * 60 + "\n\n")
 
-            for _, _, content in chapters:
-                f.write(content.strip() + "\n\n")
+            for idx, title, content in chapters:
+                clean_content = content.strip()
+                if not clean_content.startswith(title):
+                    f.write(f"{title}\n\n")
+                f.write(clean_content + "\n\n")
 
         return output_path

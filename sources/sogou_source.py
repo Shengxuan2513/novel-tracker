@@ -48,10 +48,12 @@ class SogouSearchSource(BaseSource):
                     if page_url.startswith("/"):
                         page_url = f"https://www.sogou.com{page_url}"
 
-                    body_text = item.get_text(" ", strip=True)
-
-                    if novel_name not in body_text and novel_name not in title_text:
+                    clean_book = re.sub(r'[\(（《》）\s]', '', novel_name)
+                    clean_title = re.sub(r'[\(（《》）\s]', '', title_text)
+                    if clean_book not in clean_title:
                         continue
+
+                    body_text = item.get_text(" ", strip=True)
 
                     matches = re.findall(
                         r'(第\s*[0-9零一二两三四五六七八九十百千万]+\s*[章节回集卷篇节][^\s,，。；\n\r<]{0,30})',

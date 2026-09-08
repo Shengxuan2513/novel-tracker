@@ -1,18 +1,52 @@
-"""
-Heuristic Catalog and Pagination Discovery Engine with Catalog Cohesion & Anti-Noise Validation.
-Extracts book metadata, catalog links, and dynamically follows pagination links without hardcoded site rules.
-"""
-
+import asyncio
+import os
 import re
-from typing import List, Optional, Tuple, Dict
-from urllib.parse import urljoin
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
+
 import httpx
 from bs4 import BeautifulSoup
 
 from core.parser import extract_chapter_number
 
 
+def safe_decode_response(resp: httpx.Response) -> str:
+    """Accurately decodes HTTP response detecting GBK/GB2312/GB18030/UTF-8 charsets."""
+    raw_head = resp.content[:2000].decode("latin-1", errors="ignore")
+    m = re.search(r'charset=["\']?\s*([a-zA-Z0-9_-]+)', raw_head, re.IGNORECASE)
+    detected = m.group(1).lower() if m else None
+
+    if detected in ("gbk", "gb2312", "gb18030"):
+        try:
+            return resp.content.decode("gb18030", errors="replace")
+        except Exception:
+            pass
+
+    if detected in ("utf-8", "utf8"):
+        try:
+            return resp.content.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    enc = resp.encoding if resp.encoding and resp.encoding.lower() not in ('iso-8859-1', 'ascii') else None
+    if enc:
+        try:
+            return resp.content.decode(enc, errors="replace")
+        except Exception:
+            pass
+
+    try:
+        return resp.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return resp.content.decode("gb18030", errors="replace")
+
+
 class HeuristicCatalogExtractor:
+    """
+    Heuristic catalog and chapter list extractor.
+    Discovers full chapter index from catalog pages, novel detail pages, or paginated catalogs.
+    """
+
     def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
         self.headers = {
@@ -25,8 +59,8 @@ class HeuristicCatalogExtractor:
             'Accept-Language': 'zh-CN,zh;q=0.9',
         }
 
-    def extract_metadata_from_soup(self, soup: BeautifulSoup, page_url: str) -> Dict[str, str]:
-        """Extracts book title, author, and description heuristically."""
+    def extract_novel_meta(self, soup: BeautifulSoup) -> Dict[str, str]:
+        """Extracts book title and author heuristically from HTML."""
         meta = {"title": "", "author": "未知", "description": ""}
 
         # 1. OpenGraph / Novel Meta Tags
@@ -58,6 +92,10 @@ class HeuristicCatalogExtractor:
             if m:
                 meta["author"] = m.group(1).strip()
 
+        if meta["title"]:
+            meta["title"] = re.sub(r'^\s*\d+(\.\d+)?[万千]?字\s*', '', meta["title"]).strip()
+            meta["title"] = re.sub(r'(?:最新章节|全文阅读|小说|TXT下载|在线阅读|无弹窗).*$', '', meta["title"]).strip()
+
         return meta
 
     def find_catalog_link_from_detail(self, soup: BeautifulSoup, current_url: str) -> Optional[str]:
@@ -75,154 +113,169 @@ class HeuristicCatalogExtractor:
         return None
 
     def find_next_page_link(self, soup: BeautifulSoup, current_url: str) -> Optional[str]:
-        """Finds dynamic '下一页' link from catalog page."""
+        """Detects pagination links for multi-page catalogs."""
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True)
-            if any(k == text for k in ("下一页", "下页", "下一頁", "下頁", "下一组", "Next")):
-                href = a["href"]
-                if not href.startswith("javascript") and not href.startswith("#"):
-                    target = urljoin(current_url, href)
-                    if target != current_url:
-                        return target
+            if any(k in text for k in ("下一页", "下一页 »", "Next Page", "后一页")):
+                return urljoin(current_url, a["href"])
         return None
 
-    @staticmethod
-    def is_valid_catalog(chapters: List[Tuple[float, str, str]], expected_book_name: str = "") -> bool:
+    def parse_single_catalog_page(
+        self,
+        soup: BeautifulSoup,
+        base_url: str,
+        start_idx: int = 1
+    ) -> List[Tuple[int, str, str, float]]:
         """
-        Validates if extracted chapter list belongs to a genuine single novel catalog,
-        and not a random multi-book search/tag aggregation snippet.
+        Parses all chapter links from a single catalog HTML page.
+        Returns: [(index, title, full_url, chapter_num), ...]
         """
-        if not chapters or len(chapters) < 3:
-            return False
+        results = []
+        seen_urls = set()
 
-        nums = [num for num, title, url in chapters if num > 0]
-        if not nums:
-            return len(chapters) >= 5
+        containers = soup.find_all(["div", "ul", "dl", "section", "table"])
+        best_container = None
+        max_density = 0
 
-        # Check if the catalog is inverted (e.g. 16, 15, 14 ... 1)
-        is_strictly_descending = all(nums[i] > nums[i+1] for i in range(len(nums)-1))
-        if is_strictly_descending and len(nums) >= 3:
-            # Reverse for continuity analysis
-            nums = list(reversed(nums))
+        for container in containers:
+            links = container.find_all("a", href=True)
+            if len(links) < 5:
+                continue
 
-        # Continuity & step analysis
-        step_diffs = [nums[i+1] - nums[i] for i in range(len(nums)-1)]
-        
-        # In a genuine catalog, consecutive steps should be positive (mostly 1..3)
-        negative_steps = sum(1 for d in step_diffs if d <= 0)
-        abnormal_jumps = sum(1 for d in step_diffs if d > 10)
+            chapter_matches = 0
+            for link in links:
+                txt = link.get_text(strip=True)
+                if re.search(r'(第\s*[0-9零一二两三四五六七八九十百千万]+\s*[章节回集卷篇节]|Chapter\s*\d+|序章|楔子|尾声|番外|终章|大结局)', txt, re.I):
+                    chapter_matches += 1
 
-        total_steps = len(step_diffs)
-        if total_steps > 0:
-            # If > 20% steps are negative or erratic jumps, this is a dirty multi-book aggregator
-            if (negative_steps + abnormal_jumps) / total_steps > 0.25:
-                return False
+            density = chapter_matches / max(len(links), 1)
+            if chapter_matches >= 5 and (chapter_matches > max_density * 5 or density > 0.5):
+                if chapter_matches > max_density:
+                    max_density = chapter_matches
+                    best_container = container
 
-        # Check min/max span vs length
-        span = max(nums) - min(nums)
-        if len(nums) < 25 and span > len(nums) * 5:
-            # e.g., 17 chapters but span from 1 to 950 with huge gaps -> aggregator page
-            return False
+        search_scope = best_container if best_container else soup
 
-        return True
+        for a in search_scope.find_all("a", href=True):
+            txt = a.get_text(strip=True)
+            if not txt or len(txt) > 60:
+                continue
+
+            href = a["href"].strip()
+            if href.startswith("javascript:") or href.startswith("#") or not href:
+                continue
+
+            full_url = urljoin(base_url, href)
+            if full_url in seen_urls:
+                continue
+
+            if not re.search(r'(第\s*[0-9零一二两三四五六七八九十百千万]+\s*[章节回集卷篇节]|Chapter\s*\d+|序章|楔子|尾声|番外|终章|大结局|\d+\.|\d+、)', txt, re.I):
+                continue
+
+            seen_urls.add(full_url)
+            ch_num, _ = extract_chapter_number(txt)
+            results.append((len(results) + start_idx, txt, full_url, ch_num))
+
+        return results
 
     async def discover_catalog(
         self,
-        start_url: str,
+        target_url: str,
         html_preset: Optional[str] = None
     ) -> Tuple[Dict[str, str], List[Tuple[int, str, str, float]]]:
         """
-        Discovers all chapter items by dynamically traversing catalog pagination.
+        Discovers complete book metadata and all chapter links (including handling multi-page catalogs).
         Returns:
-            (metadata_dict, chapters_list: [(index, title, url, chapter_num), ...])
+            (book_meta: Dict, chapters: List[(idx, title, url, num)])
         """
-        chapters_raw: List[Tuple[float, str, str]] = []
-        seen_urls = set()
-        visited_pages = set()
-        meta = {"title": "未知小说", "author": "未知"}
+        chapters: List[Tuple[int, str, str, float]] = []
+        book_meta: Dict[str, str] = {"title": "未知小说", "author": "未知"}
+        visited_urls = set()
 
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout, follow_redirects=True, verify=False) as client:
-            current_url = start_url
+        current_url = target_url
 
+        async with httpx.AsyncClient(
+            headers=self.headers,
+            timeout=self.timeout,
+            follow_redirects=True,
+            verify=False
+        ) as client:
+            # 1. Fetch initial page if not preset
             if html_preset:
-                soup = BeautifulSoup(html_preset, "html.parser")
+                html = html_preset
             else:
-                resp = await client.get(current_url)
-                soup = BeautifulSoup(resp.text, "html.parser")
-
-            meta = self.extract_metadata_from_soup(soup, current_url)
-
-            # Pivot from detail page to catalog page if link exists
-            catalog_pivot = self.find_catalog_link_from_detail(soup, current_url)
-            if catalog_pivot and catalog_pivot != current_url:
-                current_url = catalog_pivot
-
-            page_count = 0
-            max_pages = 60
-
-            while current_url and page_count < max_pages:
-                if current_url in visited_pages:
-                    break
-                visited_pages.add(current_url)
-                page_count += 1
-
                 try:
                     resp = await client.get(current_url)
-                    if resp.status_code != 200:
-                        break
+                    html = safe_decode_response(resp)
+                except Exception:
+                    return book_meta, chapters
 
-                    enc = resp.encoding if resp.encoding and resp.encoding != 'iso-8859-1' else 'utf-8'
-                    try:
-                        html = resp.content.decode(enc, errors='replace')
-                    except Exception:
-                        html = resp.text
+            soup = BeautifulSoup(html, "html.parser")
+            book_meta = self.extract_novel_meta(soup)
 
-                    soup = BeautifulSoup(html, "html.parser")
-                    if not meta["title"] or meta["title"] == "未知小说":
-                        meta = self.extract_metadata_from_soup(soup, current_url)
+            # Check if this is a book detail page with an external catalog link
+            catalog_link = self.find_catalog_link_from_detail(soup, current_url)
+            if catalog_link and catalog_link != current_url and catalog_link not in visited_urls:
+                try:
+                    resp = await client.get(catalog_link)
+                    c_html = safe_decode_response(resp)
+                    current_url = catalog_link
+                    soup = BeautifulSoup(c_html, "html.parser")
+                    meta2 = self.extract_novel_meta(soup)
+                    if meta2["title"]:
+                        book_meta["title"] = meta2["title"]
+                    if meta2["author"] != "未知":
+                        book_meta["author"] = meta2["author"]
+                except Exception:
+                    pass
 
-                    all_a = soup.find_all("a", href=True)
+            # 2. Extract chapters across paginated catalog pages
+            max_pages = 25
+            current_page = 1
 
-                    for a in all_a:
-                        raw_title = a.get_text(strip=True)
-                        href = a["href"]
+            while current_url and current_url not in visited_urls and current_page <= max_pages:
+                visited_urls.add(current_url)
 
-                        if any(nav in raw_title for nav in ("上一页", "下一页", "目录", "首页", "书架", "返回", "最新章节", "开始阅读")):
-                            continue
+                page_chapters = self.parse_single_catalog_page(soup, current_url, start_idx=len(chapters) + 1)
+                chapters.extend(page_chapters)
 
-                        clean_title = re.sub(r'(?:APP免费|VIP免费|免费阅读|更新时间.*$)', '', raw_title).strip()
+                next_url = self.find_next_page_link(soup, current_url)
+                if not next_url or next_url in visited_urls:
+                    break
 
-                        if re.search(r'(第\s*[0-9零一二两三四五六七八九十百千万]+\s*[章节回集卷篇节]|^\s*[0-9]+[\.、\s]|终章|大结局|完本感言|序章|楔子)', clean_title):
-                            full_url = urljoin(current_url, href)
-                            if full_url not in seen_urls:
-                                seen_urls.add(full_url)
-                                num, _ = extract_chapter_number(clean_title)
-                                chapters_raw.append((num, clean_title, full_url))
-
-                    # Look for next page link
-                    next_page = self.find_next_page_link(soup, current_url)
-                    if next_page and next_page not in visited_pages:
-                        current_url = next_page
-                    else:
-                        break
-
+                try:
+                    current_page += 1
+                    resp = await client.get(next_url)
+                    n_html = safe_decode_response(resp)
+                    current_url = next_url
+                    soup = BeautifulSoup(n_html, "html.parser")
                 except Exception:
                     break
 
-        # Validate catalog cohesion
-        if not self.is_valid_catalog(chapters_raw):
-            return meta, []
+        # Post-process: deduplicate by chapter title
+        final_chapters = []
+        seen_titles = set()
+        for idx, (original_idx, title, url, num) in enumerate(chapters, 1):
+            clean_t = re.sub(r'\s+', '', title)
+            if clean_t not in seen_titles:
+                seen_titles.add(clean_t)
+                final_chapters.append((len(final_chapters) + 1, title, url, num))
 
-        # Chronological sort
-        if len(chapters_raw) > 1 and chapters_raw[0][0] > chapters_raw[-1][0] and chapters_raw[-1][0] > 0:
-            chapters_raw.reverse()
-        else:
-            valid_nums = [item for item in chapters_raw if item[0] > 0]
-            if len(valid_nums) > len(chapters_raw) * 0.7:
-                chapters_raw.sort(key=lambda x: x[0])
+        # Auto-detect reverse ordering (e.g. Chapter 966 -> Chapter 1)
+        # Sort chapters sequentially if majority have valid chapter numbers
+        valid_chapters = [c for c in final_chapters if c[3] > 0]
+        if len(valid_chapters) >= 15 and len(valid_chapters) / len(final_chapters) >= 0.7:
+            final_chapters.sort(key=lambda x: (x[3] == 0, x[3]))
+            # Re-index to 1..N
+            final_chapters = [
+                (new_idx, title, url, num)
+                for new_idx, (_, title, url, num) in enumerate(final_chapters, 1)
+            ]
+        elif len(valid_chapters) >= 10 and valid_chapters[0][3] > valid_chapters[-1][3]:
+            final_chapters.reverse()
+            final_chapters = [
+                (new_idx, title, url, num)
+                for new_idx, (_, title, url, num) in enumerate(final_chapters, 1)
+            ]
 
-        final_chapters = [
-            (idx, title, url, num)
-            for idx, (num, title, url) in enumerate(chapters_raw, start=1)
-        ]
-        return meta, final_chapters
+        return book_meta, final_chapters
