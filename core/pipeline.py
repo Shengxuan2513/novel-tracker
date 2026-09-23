@@ -25,7 +25,7 @@ NOISE_PATTERNS = [
     re.compile(r'^\s*[-=_]{3,}\s*$', re.MULTILINE),
 ]
 
-# Structural Component Blacklist (Sidebar, recommendations, book meta)
+# Structural Component Blacklist (Sidebar, recommendations, book meta, dictionary entries, paywalls)
 SIDEBAR_COMPONENT_PATTERNS = [
     re.compile(r'^(?:同类热门书|同类书籍最近更新|最新上架|相关推荐|热评讨论|版权信息|作家主页|更多推荐|书籍简介|版权信息).*$', re.IGNORECASE),
     re.compile(r'^(?:更新时间[：:]|最新章节[：:]|热度[：:]|版权[：:]|品牌[：:]|开会员|打开QQ免费看).*$', re.IGNORECASE),
@@ -36,6 +36,10 @@ SIDEBAR_COMPONENT_PATTERNS = [
     re.compile(r'^.*?(?:小说推荐阅读|小说推荐|热门推荐)[：:].*$', re.IGNORECASE),
     re.compile(r'^-\s*(?:免费|会员).*$', re.IGNORECASE),
     re.compile(r'^本书数字版权由.*?制作发行.*$', re.IGNORECASE),
+    re.compile(r'^(?:微信扫码|开通付费会员|已读到\d+%).*$', re.IGNORECASE),
+    re.compile(r'^(?:你可以在这里记录本书的|想法、划线、书签|点评此书).*$', re.IGNORECASE),
+    re.compile(r'^\d+\.\s*(?:无|未|沉|漫|副词|同|名词|动词|形容词).*?[：:].*$', re.IGNORECASE),
+    re.compile(r'^(?:汉语词典|在线词典|成语大全|字词解析|笔顺编码|部首查字).*$', re.IGNORECASE),
 ]
 
 # Patterns for author notes / promos that should be filtered if standalone lines
@@ -117,15 +121,13 @@ class RegexCleaningPipeline:
                 reason=f"Character count ({char_count}) is below minimum threshold ({self.min_char_length})"
             )
 
-        # Check for trailing preview truncation markers
-        if cleaned_paragraphs:
-            last_p = cleaned_paragraphs[-1]
-            if char_count < 1000 and any(m.search(last_p) for m in TRUNCATION_MARKERS):
-                raise DataIncompleteError(
-                    chapter_title=chapter_title,
-                    url=source_url,
-                    content_length=char_count,
-                    reason="Trailing preview truncation marker detected"
-                )
+        # Reject content containing dictionary or paywall leftovers
+        if any(k in clean_body for k in ("微信扫码", "开通付费会员", "已读到0%", "想法、划线、书签", "屋里没人", "沉没。淹没。")):
+            raise DataIncompleteError(
+                chapter_title=chapter_title,
+                url=source_url,
+                content_length=char_count,
+                reason="Paywall card or dictionary content detected in body"
+            )
 
         return clean_body

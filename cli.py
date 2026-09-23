@@ -8,11 +8,14 @@ import os
 import sys
 import time
 from datetime import datetime
+from typing import Optional, List, Dict, Tuple
 
-# Set up utf-8 encoding for stdout on Windows
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.platform.startswith("win") and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 from sources import SourceManager
 from core.tracker import NovelTracker
@@ -193,6 +196,31 @@ async def cmd_extract(target: str, formats: str, start: int, limit: Optional[int
     )
 
 
+async def cmd_update_file(file_path: str, source: Optional[str], concurrency: int):
+    """Incrementally update a local novel file."""
+    from core.incremental_updater import IncrementalNovelUpdater
+    updater = IncrementalNovelUpdater(concurrency=concurrency)
+    await updater.update_book(file_path, custom_source_url=source)
+
+
+async def cmd_audit(file_path: str, fix: bool, source: Optional[str], threshold: int):
+    """Audit local novel file for quality defects and optionally auto-repair."""
+    from core.book_health_auditor import NovelHealthAuditor
+    auditor = NovelHealthAuditor(min_char_threshold=threshold)
+    if fix:
+        await auditor.repair_file(file_path, source_url=source)
+    else:
+        defects, bname, author, _ = auditor.audit_file(file_path)
+        print(f"📖 书名: 《{bname}》 (作者: {author})")
+        if defects:
+            print(f"⚠️ 发现 {len(defects)} 处缺陷章节:")
+            for d in defects:
+                print(f"  - [{d['type']}] 第 {d['chapter_num']} 章 ({d['title']}): {d['reason']}")
+            print(f"\n💡 提示：运行 `python cli.py audit \"{file_path}\" --fix` 即可一键自动修复！")
+        else:
+            print("✅ 全书 100% 完整，无任何断章、残缺或污染！")
+
+
 async def cmd_monitor(interval_minutes: int):
     """Run continuous monitoring loop."""
     print(f"\n🔄 进入自动后台监控模式，每 {interval_minutes} 分钟检查一次更新...")
@@ -255,6 +283,19 @@ def main():
     p_extract.add_argument("-o", "--output", type=str, default="downloads", help="输出文件夹，默认 downloads")
     p_extract.add_argument("-c", "--concurrency", type=int, default=12, help="并发下载数，默认 12")
 
+    # update-file (Incremental File Updater)
+    p_update = subparsers.add_parser("update-file", aliases=["update"], help="本地小说文件智能增量续更：分析本地已有章节，仅抓取新章节追加并编译 EPUB")
+    p_update.add_argument("file", type=str, help="本地小说文件路径（.txt 或 .epub）")
+    p_update.add_argument("-s", "--source", type=str, default=None, help="指定的书源目录 URL（可选）")
+    p_update.add_argument("-c", "--concurrency", type=int, default=15, help="并发抓取数，默认 15")
+
+    # audit (Book Health Auditor)
+    p_audit = subparsers.add_parser("audit", aliases=["check-file"], help="本地小说文件健康体检与自愈：扫描空章、断号、词典污染与 VIP 卡片并可一键自动修复")
+    p_audit.add_argument("file", type=str, help="本地小说文件路径（.txt 或 .epub）")
+    p_audit.add_argument("--fix", action="store_true", help="自动联网抓取优质镜像进行原地自愈修复")
+    p_audit.add_argument("-s", "--source", type=str, default=None, help="指定的书源目录 URL（可选）")
+    p_audit.add_argument("-t", "--threshold", type=int, default=350, help="章节字数过短下限阈值，默认 350")
+
     # relay (Browser Relay Server)
     p_relay = subparsers.add_parser("relay", help="启动本地浏览器接力服务，配合油猴脚本一键同步任何受盾保护小说")
     p_relay.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
@@ -290,6 +331,10 @@ def main():
         asyncio.run(cmd_download(args.name, args.url, args.start, args.limit, args.output, args.concurrency))
     elif args.command == "extract":
         asyncio.run(cmd_extract(args.target, args.format, args.start, args.limit, args.output, args.concurrency))
+    elif args.command in ("update-file", "update"):
+        asyncio.run(cmd_update_file(args.file, args.source, args.concurrency))
+    elif args.command in ("audit", "check-file"):
+        asyncio.run(cmd_audit(args.file, args.fix, args.source, args.threshold))
     elif args.command == "relay":
         from core.relay_server import RelayServer
         server = RelayServer(port=args.port, output_dir=args.output)
