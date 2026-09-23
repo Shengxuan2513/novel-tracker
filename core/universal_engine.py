@@ -225,7 +225,8 @@ class UniversalNovelExtractor:
         chap_url: str,
         semaphore: asyncio.Semaphore,
         log_callback: Optional[callable] = None,
-        persist: bool = True
+        persist: bool = True,
+        client: Optional[httpx.AsyncClient] = None
     ) -> Tuple[int, str, str]:
         """
         Fetches and extracts clean text for a single chapter with dual-track extraction and fallback routing.
@@ -235,39 +236,43 @@ class UniversalNovelExtractor:
             if persist:
                 cached = self.storage.get_chapter(novel_name, chap_index)
                 if cached and cached.get("content") and len(cached["content"]) >= 200:
-                    if "暂缺" not in cached["content"] and "抓取异常" not in cached["content"]:
-                        return (chap_index, cached.get("title", chap_title), cached["content"])
+                    c_text = cached["content"]
+                    if "暂缺" not in c_text and "抓取异常" not in c_text and not any(k in c_text for k in ("微信扫码", "开通付费会员", "已读到0%", "屋里没人", "沉没。淹没。")):
+                        return (chap_index, cached.get("title", chap_title), c_text)
 
-            # 1. First attempt: Direct fetch + DualTrackExtractor (Rule or Heuristic)
-            try:
-                async with httpx.AsyncClient(
-                    headers=self.headers,
-                    timeout=self.timeout,
-                    follow_redirects=True,
-                    verify=False
-                ) as client:
-                    resp = await client.get(chap_url)
-                    if resp.status_code == 200:
-                        from core.heuristic_catalog import safe_decode_response
-                        html = safe_decode_response(resp)
+            # 1. First attempt: Direct fetch with retries + DualTrackExtractor (Rule or Heuristic)
+            max_direct_retries = 3
+            for attempt in range(max_direct_retries):
+                try:
+                    c = client if client is not None else httpx.AsyncClient(headers=self.headers, timeout=self.timeout, follow_redirects=True, verify=False)
+                    try:
+                        resp = await c.get(chap_url, headers={"Referer": chap_url})
+                        if resp.status_code == 200:
+                            from core.heuristic_catalog import safe_decode_response
+                            html = safe_decode_response(resp)
 
-                        raw_text = self.extractor.extract_article_text(html, url=chap_url)
-                        clean_text = self.pipeline.clean_text(raw_text, chapter_title=chap_title, source_url=chap_url)
-                        if len(clean_text) >= 200 and not any(k in clean_text for k in ("VIP", "开通会员", "购买后阅读")):
-                            if persist:
-                                self.storage.save_chapter(
-                                    book_name=novel_name,
-                                    index=chap_index,
-                                    title=chap_title,
-                                    content=clean_text,
-                                    url=chap_url,
-                                    source_domain=urllib.parse.urlparse(chap_url).netloc
-                                )
-                            if log_callback:
-                                await log_callback(f"  ✓ [{chap_index}] 提取成功: {chap_title[:20]} ({len(clean_text)} 字)")
-                            return (chap_index, chap_title, clean_text)
-            except Exception:
-                pass
+                            raw_text = self.extractor.extract_article_text(html, url=chap_url)
+                            clean_text = self.pipeline.clean_text(raw_text, chapter_title=chap_title, source_url=chap_url)
+                            if len(clean_text) >= 200 and not any(k in clean_text for k in ("VIP", "开通会员", "购买后阅读")):
+                                if persist:
+                                    self.storage.save_chapter(
+                                        book_name=novel_name,
+                                        index=chap_index,
+                                        title=chap_title,
+                                        content=clean_text,
+                                        url=chap_url,
+                                        source_domain=urllib.parse.urlparse(chap_url).netloc
+                                    )
+                                if log_callback:
+                                    await log_callback(f"  ✓ [{chap_index}] 提取成功: {chap_title[:20]} ({len(clean_text)} 字)")
+                                return (chap_index, chap_title, clean_text)
+                    finally:
+                        if client is None:
+                            await c.aclose()
+                except Exception:
+                    pass
+                if attempt < max_direct_retries - 1:
+                    await asyncio.sleep(0.3 * (attempt + 1))
 
             # 2. Second attempt: Smart fallback router across mirror search
             try:
@@ -276,18 +281,19 @@ class UniversalNovelExtractor:
                     chapter_title=chap_title
                 )
                 if fallback_text and len(fallback_text) >= 200:
-                    if persist:
-                        self.storage.save_chapter(
-                            book_name=novel_name,
-                            index=chap_index,
-                            title=chap_title,
-                            content=fallback_text,
-                            url=fallback_url,
-                            source_domain=urllib.parse.urlparse(fallback_url).netloc if fallback_url else "mirror"
-                        )
-                    if log_callback:
-                        await log_callback(f"  ✓ [{chap_index}] 备用镜像提取成功: {chap_title[:20]} ({len(fallback_text)} 字)")
-                    return (chap_index, chap_title, fallback_text)
+                    if not any(k in fallback_text for k in ("微信扫码", "开通付费会员", "已读到0%", "屋里没人", "沉没。淹没。")):
+                        if persist:
+                            self.storage.save_chapter(
+                                book_name=novel_name,
+                                index=chap_index,
+                                title=chap_title,
+                                content=fallback_text,
+                                url=fallback_url,
+                                source_domain=urllib.parse.urlparse(fallback_url).netloc if fallback_url else "mirror"
+                            )
+                        if log_callback:
+                            await log_callback(f"  ✓ [{chap_index}] 备用镜像提取成功: {chap_title[:20]} ({len(fallback_text)} 字)")
+                        return (chap_index, chap_title, fallback_text)
             except Exception:
                 pass
 
@@ -374,7 +380,7 @@ class UniversalNovelExtractor:
         os.makedirs(out_dir, exist_ok=True)
 
         async def _log(msg: str):
-            print(msg)
+            print(msg, flush=True)
             if log_callback:
                 try:
                     if asyncio.iscoroutinefunction(log_callback):
@@ -501,19 +507,26 @@ class UniversalNovelExtractor:
 
             semaphore = asyncio.Semaphore(self.concurrency)
             if needed_chaps:
-                tasks = [
-                    self.fetch_single_chapter(novel_name_for_tasks, idx, title, url, semaphore, log_callback=None, persist=True)
-                    for idx, title, url, _ in needed_chaps
-                ]
+                async with httpx.AsyncClient(
+                    headers=self.headers,
+                    timeout=self.timeout,
+                    follow_redirects=True,
+                    verify=False,
+                    limits=httpx.Limits(max_connections=35, max_keepalive_connections=25)
+                ) as shared_client:
+                    tasks = [
+                        self.fetch_single_chapter(novel_name_for_tasks, idx, title, url, semaphore, log_callback=None, persist=True, client=shared_client)
+                        for idx, title, url, _ in needed_chaps
+                    ]
 
-                completed = 0
-                total = len(tasks)
-                for coro in asyncio.as_completed(tasks):
-                    res = await coro
-                    completed += 1
-                    if completed % 10 == 0 or completed == total:
-                        pct = completed / total * 100
-                        await _log(f"📥 增量进度: [{completed}/{total}] {pct:.1f}% ({res[1][:15]}...)")
+                    completed = 0
+                    total = len(tasks)
+                    for coro in asyncio.as_completed(tasks):
+                        res = await coro
+                        completed += 1
+                        if completed % 10 == 0 or completed == total:
+                            pct = completed / total * 100
+                            await _log(f"📥 增量进度: [{completed}/{total}] {pct:.1f}% ({res[1][:15]}...)")
 
             # Load all chapters from ChapterStorage
             chapters_data = self.storage.load_all_chapters(novel_name_for_tasks)

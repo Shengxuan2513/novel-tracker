@@ -94,7 +94,10 @@ class HeuristicCatalogExtractor:
 
         if meta["title"]:
             meta["title"] = re.sub(r'^\s*\d+(\.\d+)?[万千]?字\s*', '', meta["title"]).strip()
-            meta["title"] = re.sub(r'(?:最新章节|全文阅读|小说|TXT下载|在线阅读|无弹窗).*$', '', meta["title"]).strip()
+            meta["title"] = re.sub(r'(?:最新章节|全文阅读|小说|TXT下载|在线阅读|无弹窗|章节列表|目录).*$', '', meta["title"]).strip()
+
+        if any(k in meta["author"] for k in ("实时更新", "网友提供", "同步", "免费", "章节")):
+            meta["author"] = "未知"
 
         return meta
 

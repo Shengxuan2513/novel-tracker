@@ -63,7 +63,8 @@ class ChapterStorage:
                         data = json.load(f)
                         content = data.get("content", "")
                         if content and len(content) >= 100 and "暂缺" not in content and "抓取异常" not in content:
-                            cached_indices.add(idx)
+                            if not any(k in content for k in ("微信扫码", "开通付费会员", "已读到0%", "屋里没人", "沉没。淹没。")):
+                                cached_indices.add(idx)
                 except Exception:
                     pass
 
