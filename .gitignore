@@ -12,14 +12,10 @@ env/
 venv/
 ENV/
 
-# Data and Downloads (Prevent uploading large book files)
-downloads/
+# Data and Storage Cache (Temporary files)
 storage/
 source_cache.json
 *.tmp
-*.txt
-*.epub
-*.mobi
 
 # User Configurations & State
 config.json
