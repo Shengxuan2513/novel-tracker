@@ -74,6 +74,8 @@ class TestWebServerLegadoRoutes(AioHTTPTestCase):
         app.router.add_get("/api/legado/sources.json", webapp.handle_legado_sources)
         app.router.add_get("/api/legado/info", webapp.handle_legado_info)
         app.router.add_get("/legado.apk", webapp.handle_legado_apk)
+        app.router.add_route("PROPFIND", "/", webapp.handle_webdav)
+        app.router.add_route("OPTIONS", "/", webapp.handle_webdav)
         return app
 
     async def test_opds_endpoint(self):
@@ -82,6 +84,19 @@ class TestWebServerLegadoRoutes(AioHTTPTestCase):
         text = await resp.text()
         assert "<?xml version=" in text
         assert "urn:uuid:novel-tracker-opds-catalog" in text
+
+    async def test_webdav_endpoint(self):
+        # OPTIONS
+        resp = await self.client.request("OPTIONS", "/")
+        assert resp.status == 200
+        assert "PROPFIND" in resp.headers.get("Allow", "")
+
+        # PROPFIND
+        resp = await self.client.request("PROPFIND", "/")
+        assert resp.status == 207
+        text = await resp.text()
+        assert "D:multistatus" in text
+        assert "D:collection" in text
 
     async def test_legado_sources_endpoint(self):
         resp = await self.client.request("GET", "/api/legado/sources.json")

@@ -1077,6 +1077,75 @@ class WebApp:
             "apk_exists": os.path.exists(apk_path)
         })
 
+    async def handle_webdav(self, request: web.Request) -> web.Response:
+        """Handle WebDAV protocol (PROPFIND, OPTIONS) for Legado 远程书籍."""
+        from xml.sax.saxutils import escape
+        from datetime import timezone
+        method = request.method.upper()
+        if method == "OPTIONS":
+            return web.Response(
+                status=200,
+                headers={
+                    "DAV": "1, 2",
+                    "Allow": "OPTIONS, GET, HEAD, PROPFIND",
+                    "MS-Author-Via": "DAV"
+                }
+            )
+
+        if method == "PROPFIND":
+            req_path = request.path
+            responses = []
+
+            # Collection root
+            responses.append(f"""  <D:response>
+    <D:href>{req_path}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:resourcetype><D:collection/></D:resourcetype>
+        <D:displayname>NovelTracker</D:displayname>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>""")
+
+            if os.path.exists(self.output_dir):
+                for fname in sorted(os.listdir(self.output_dir)):
+                    if fname.lower().endswith((".epub", ".txt")):
+                        fpath = os.path.join(self.output_dir, fname)
+                        size = os.path.getsize(fpath)
+                        mtime = datetime.fromtimestamp(os.path.getmtime(fpath), timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+                        is_epub = fname.lower().endswith(".epub")
+                        ctype = "application/epub+zip" if is_epub else "text/plain"
+                        quoted_name = urllib.parse.quote(fname)
+
+                        responses.append(f"""  <D:response>
+    <D:href>/api/download/{quoted_name}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:displayname>{escape(fname)}</D:displayname>
+        <D:getcontentlength>{size}</D:getcontentlength>
+        <D:getlastmodified>{mtime}</D:getlastmodified>
+        <D:resourcetype/>
+        <D:getcontenttype>{ctype}</D:getcontenttype>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>""")
+
+            xml_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+{chr(10).join(responses)}
+</D:multistatus>"""
+            return web.Response(
+                status=207,
+                text=xml_content,
+                content_type="application/xml",
+                charset="utf-8",
+                headers={"DAV": "1, 2"}
+            )
+
+        return web.Response(status=405, text="Method Not Allowed")
+
     def start(self, auto_open: bool = True):
         app = web.Application()
         app.router.add_get("/", self.handle_index)
@@ -1088,11 +1157,18 @@ class WebApp:
         app.router.add_get("/api/download/{filename}", self.handle_download_file)
         app.router.add_post("/api/extract", self.handle_extract_stream)
 
-        # Legado (阅读 3.0) Integration Endpoints
+        # Legado (阅读 3.0) Integration Endpoints (OPDS + WebDAV)
         app.router.add_get("/opds", self.handle_opds)
         app.router.add_get("/api/legado/sources.json", self.handle_legado_sources)
         app.router.add_get("/api/legado/info", self.handle_legado_info)
         app.router.add_get("/legado.apk", self.handle_legado_apk)
+
+        # WebDAV Support for Legado 3.0 "远程书籍"
+        for p in ["/", "/opds", "/webdav", "/downloads", "/downloads/"]:
+            app.router.add_route("PROPFIND", p, self.handle_webdav)
+            app.router.add_route("OPTIONS", p, self.handle_webdav)
+        app.router.add_get("/webdav", self.handle_webdav)
+        app.router.add_get("/downloads/{filename}", self.handle_download_file)
 
         local_url = f"http://127.0.0.1:{self.port}"
         from core.legado_bridge import get_local_ip
