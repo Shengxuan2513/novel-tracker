@@ -29,10 +29,22 @@ class ContentFingerprintValidator:
 
     def _generate_fingerprint(self, text: str) -> str:
         """
-        Generates a normalized MD5 fingerprint from cleaned alpha-numeric Chinese text.
+        Generates a robust fingerprint by sampling across the body text (excluding static headers/footers).
         """
-        clean_core = re.sub(r'[^\w\u4e00-\u9fa5]', '', text)
-        sample = clean_core[:350]
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        body_lines = [l for l in lines if not any(k in l for k in ("プライバシー", "規約", "Cookie", "版权所有", "All rights", "免责声明", "广告"))]
+        clean_core = re.sub(r'[^\w\u4e00-\u9fa5]', '', "".join(body_lines))
+        
+        if len(clean_core) < 200:
+            sample = clean_core
+        else:
+            # Sample across 3 slices: 25%, 50%, 75% of text
+            l = len(clean_core)
+            p1 = clean_core[l//4 : l//4 + 100]
+            p2 = clean_core[l//2 : l//2 + 100]
+            p3 = clean_core[3*l//4 : 3*l//4 + 100]
+            sample = f"{p1}|{p2}|{p3}"
+            
         return hashlib.md5(sample.encode('utf-8')).hexdigest()
 
     def validate_and_record(self, chapter_title: str, text: str, source_url: str = "") -> None:

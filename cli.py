@@ -240,6 +240,118 @@ async def cmd_monitor(interval_minutes: int):
             await asyncio.sleep(60)
 
 
+def find_pid_by_port(port: int) -> Optional[int]:
+    """Find listening process PID on given TCP port."""
+    try:
+        import psutil
+        for conn in psutil.net_connections(kind='inet'):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                return conn.pid
+    except Exception:
+        pass
+    return None
+
+
+def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False, stop: bool = False, restart: bool = False):
+    """Display Legado integration guide and optionally export book sources or manage server."""
+    import json
+    import urllib.request
+    from core.legado_bridge import LegadoBridge, get_local_ip
+
+    if stop:
+        pid = find_pid_by_port(port)
+        if pid:
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                p.terminate()
+                print(f"[+] 已成功终止后台服务进程 (PID: {pid}, 端口: {port})")
+            except Exception as e:
+                print(f"[-] 终止进程失败: {e}")
+        else:
+            print(f"[*] 端口 {port} 上未检测到运行中的服务进程。")
+        return
+
+    if restart:
+        pid = find_pid_by_port(port)
+        if pid:
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                p.terminate()
+                p.wait(timeout=3)
+                print(f"[+] 已终止旧服务进程 (PID: {pid})")
+            except Exception:
+                pass
+
+    lan_ip = get_local_ip()
+    bridge = LegadoBridge()
+
+    opds_url = f"http://{lan_ip}:{port}/opds"
+    sources_url = f"http://{lan_ip}:{port}/api/legado/sources.json"
+    apk_url = f"http://{lan_ip}:{port}/legado.apk"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    local_apk = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
+
+    print("\n" + "=" * 65)
+    print("【阅读 3.0 (Legado) 深度联动控制台】")
+    print("=" * 65)
+    print(f"[*] 探测到物理局域网 IP: {lan_ip}")
+    print(f"[*] 服务监听端口       : {port}")
+    print("-" * 65)
+    print("1. [OPDS 无线书库] (手机连入同一 Wi-Fi 即可无线下载已爬小说)")
+    print(f"   URL: {opds_url}")
+    print("   操作: 打开阅读 App -> 书架右上角菜单 -> 添加外部书库 -> 输入上述 URL")
+    print("-" * 65)
+    print("2. [精选优质书源] (飘天文学 / 速读谷等多页抓取源)")
+    print(f"   URL: {sources_url}")
+    print("   操作: 打开阅读 App -> 我的 -> 书源管理 -> 右上角菜单 -> 网络导入")
+    print("-" * 65)
+    print("3. [Legado 3.26 arm64 官方安装包]")
+    print(f"   手机下载: {apk_url}")
+    if os.path.exists(local_apk):
+        size_mb = os.path.getsize(local_apk) / (1024 * 1024)
+        print(f"   本地文件: {local_apk} ({size_mb:.2f} MB)")
+    else:
+        print("   本地文件: 尚未就绪 (访问链接将自动重定向至官方发布源)")
+    print("=" * 65)
+
+    if export_sources is not None:
+        target_path = export_sources if export_sources.strip() else "legado_sources.json"
+        sources = bridge.generate_legado_book_sources()
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(sources, f, ensure_ascii=False, indent=2)
+        print(f"\n[+] 已成功导出 {len(sources)} 条精选书源到: {os.path.abspath(target_path)}\n")
+        return
+
+    if info_only:
+        return
+
+    # Check if web server is already running on this port
+    is_running = False
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/legado/info")
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            if resp.status == 200:
+                is_running = True
+    except Exception:
+        pass
+
+    if is_running and not restart:
+        pid = find_pid_by_port(port)
+        pid_str = f" (PID: {pid})" if pid else ""
+        print(f"\n[OK] Web 服务正在后台常驻运行中{pid_str} (端口: {port})")
+        print("手机保持连接相同 Wi-Fi 即可直接访问上方所有链接。")
+        print("提示: 若需在前台实时查看连接日志，可执行: python cli.py legado --restart")
+        print("      若需停止后台常驻服务，可执行    : python cli.py legado --stop\n")
+    else:
+        print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持前台监听...")
+        print(">>> 手机请打开浏览器或阅读 App 访问上述地址。按 Ctrl+C 可停止服务。<<<\n")
+        from core.web_server import WebApp
+        app = WebApp(host="0.0.0.0", port=port)
+        app.start(auto_open=False)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="全网小说最新章节聚合、监控与通用提取系统",
@@ -303,12 +415,21 @@ def main():
 
     # web (Web Dashboard GUI)
     p_web = subparsers.add_parser("web", help="启动可视化 Web 控制台界面（一键提取、书架管理与文件下载）")
+    p_web.add_argument("--host", type=str, default="0.0.0.0", help="Web 监听主机地址，默认 0.0.0.0 (支持局域网移动设备访问)")
     p_web.add_argument("--port", type=int, default=5000, help="Web 监听端口，默认 5000")
     p_web.add_argument("--no-open", action="store_true", help="不自动打开默认浏览器")
 
     # monitor
     p_monitor = subparsers.add_parser("monitor", help="启动持续监控模式")
     p_monitor.add_argument("-i", "--interval", type=int, default=15, help="检查间隔（分钟），默认 15 分钟")
+
+    # legado (Legado 3.0 Integration)
+    p_legado = subparsers.add_parser("legado", aliases=["reader"], help="阅读 3.0 (Legado) 深度联动：展示 OPDS 无线书库、网络书源与 APK 下载地址")
+    p_legado.add_argument("-s", "--export-sources", nargs="?", const="legado_sources.json", default=None, help="导出 Legado 3.0 兼容书源 JSON 文件")
+    p_legado.add_argument("--port", type=int, default=5000, help="Web 服务端口，默认 5000")
+    p_legado.add_argument("--info", action="store_true", help="仅显示链接信息，不自动驻留启动 Web 服务")
+    p_legado.add_argument("--stop", action="store_true", help="停止当前运行中的后台服务进程")
+    p_legado.add_argument("--restart", action="store_true", help="重启服务并在前台窗口保持运行与输出日志")
 
     args = parser.parse_args()
 
@@ -341,8 +462,10 @@ def main():
         server.start()
     elif args.command == "web":
         from core.web_server import WebApp
-        app = WebApp(port=args.port)
+        app = WebApp(host=args.host, port=args.port)
         app.start(auto_open=not args.no_open)
+    elif args.command in ("legado", "reader"):
+        cmd_legado(args.export_sources, args.port, args.info, args.stop, args.restart)
     elif args.command == "monitor":
         asyncio.run(cmd_monitor(args.interval))
 

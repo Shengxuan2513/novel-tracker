@@ -86,6 +86,14 @@ class HeuristicCatalogExtractor:
             else:
                 meta["title"] = re.sub(r'[_|\-—].*$', '', t).replace('最新章节', '').replace('全文阅读', '').strip()
 
+        desc_meta = soup.find("meta", attrs={"name": re.compile(r"description", re.I)})
+        if desc_meta and desc_meta.get("content"):
+            meta["description"] = desc_meta["content"].strip()
+            if meta["author"] == "未知":
+                m_desc = re.search(r'(?:由|提供|作者|作家)([^\s,，。；|_\-—\n\r<]{1,10})创作', meta["description"])
+                if m_desc:
+                    meta["author"] = m_desc.group(1).strip()
+
         if meta["author"] == "未知":
             full_text = soup.get_text()
             m = re.search(r'作\s*者[：:\s]*([^\s,，。；|_\-—\n\r<]{1,12})', full_text)
@@ -93,7 +101,7 @@ class HeuristicCatalogExtractor:
                 meta["author"] = m.group(1).strip()
 
         if meta["title"]:
-            meta["title"] = re.sub(r'^\s*\d+(\.\d+)?[万千]?字\s*', '', meta["title"]).strip()
+            meta["title"] = re.sub(r'^\s*(\d+(\.\d+)?)?[万千]?字\s*', '', meta["title"]).strip()
             meta["title"] = re.sub(r'(?:最新章节|全文阅读|小说|TXT下载|在线阅读|无弹窗|章节列表|目录).*$', '', meta["title"]).strip()
 
         if any(k in meta["author"] for k in ("实时更新", "网友提供", "同步", "免费", "章节")):
