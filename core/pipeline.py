@@ -100,8 +100,10 @@ class RegexCleaningPipeline:
             if re.match(r'^第\s*[0-9零一二两三四五六七八九十百千万]+\s*[章节回集卷篇节]\b', line_str) and len(line_str) < 30:
                 continue
 
-            # Skip standalone promos
+            # Skip standalone promos and boilerplate
             if any(p.match(line_str) for p in STANDALONE_PROMO_PATTERNS):
+                continue
+            if any(k in line_str for k in ("プライバシー", "規約", "Cookie")):
                 continue
 
             cleaned_paragraphs.append(line_str)

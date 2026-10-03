@@ -254,6 +254,40 @@ class UniversalNovelExtractor:
                             raw_text = self.extractor.extract_article_text(html, url=chap_url)
                             clean_text = self.pipeline.clean_text(raw_text, chapter_title=chap_title, source_url=chap_url)
                             if len(clean_text) >= 200 and not any(k in clean_text for k in ("VIP", "开通会员", "购买后阅读")):
+                                # Check and seamlessly stitch chapter subpages if present (e.g. multi-page chapters)
+                                try:
+                                    sub_soup = BeautifulSoup(html, "html.parser")
+                                    subpage_parts = [clean_text]
+                                    curr_sub_url = chap_url
+                                    for _ in range(8):
+                                        next_sub = None
+                                        for a in sub_soup.find_all("a", href=True):
+                                            a_text = a.get_text(strip=True)
+                                            if any(k in a_text for k in ("下一页", "下页")):
+                                                href = a["href"]
+                                                target = urllib.parse.urljoin(curr_sub_url, href)
+                                                if target != curr_sub_url and not target.endswith("/") and "index" not in target:
+                                                    next_sub = target
+                                                    break
+                                        if next_sub:
+                                            sub_resp = await c.get(next_sub, headers={"Referer": curr_sub_url})
+                                            if sub_resp.status_code == 200:
+                                                sub_html = safe_decode_response(sub_resp)
+                                                sub_raw = self.extractor.extract_article_text(sub_html, url=next_sub)
+                                                sub_clean = self.pipeline.clean_text(sub_raw, chapter_title=chap_title, source_url=next_sub)
+                                                if len(sub_clean) >= 100:
+                                                    subpage_parts.append(sub_clean)
+                                                sub_soup = BeautifulSoup(sub_html, "html.parser")
+                                                curr_sub_url = next_sub
+                                            else:
+                                                break
+                                        else:
+                                            break
+                                    if len(subpage_parts) > 1:
+                                        clean_text = "\n\n".join(subpage_parts)
+                                except Exception:
+                                    pass
+
                                 if persist:
                                     self.storage.save_chapter(
                                         book_name=novel_name,
