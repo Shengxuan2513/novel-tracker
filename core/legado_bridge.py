@@ -18,17 +18,70 @@ from xml.sax.saxutils import escape
 
 
 def get_local_ip() -> str:
-    """Detect primary LAN IP of the host machine."""
+    """
+    Detect primary physical LAN IP of the host machine.
+    Filters out virtual network cards (Mihomo, Clash TUN, WSL, Tailscale, Docker, APIPA 169.254, loopback 127).
+    """
+    virtual_keywords = ['mihomo', 'clash', 'tun', 'tap', 'vethernet', 'wsl', 'tailscale', 'loopback', 'pseudo', 'vmware', 'virtual']
+    candidates = []
+
+    # 1. Try psutil if available (most reliable for Windows adapter names)
+    try:
+        import psutil
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+        for nic, addr_list in addrs.items():
+            if nic in stats and not stats[nic].isup:
+                continue
+            is_virtual = any(k in nic.lower() for k in virtual_keywords)
+            for a in addr_list:
+                if a.family == socket.AF_INET:
+                    ip = a.address
+                    if ip.startswith(('127.', '169.254.', '198.18.', '198.19.')):
+                        continue
+                    score = 0
+                    if not is_virtual:
+                        score += 100
+                    if any(w in nic.lower() for w in ['wlan', 'wi-fi', '无线', 'ethernet', '以太网']):
+                        score += 50
+                    if ip.startswith(('192.168.', '10.')):
+                        score += 30
+                    candidates.append((score, ip))
+    except Exception:
+        pass
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    # 2. Try socket.gethostbyname_ex
+    try:
+        _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
+        valid_ips = [
+            ip for ip in ip_list
+            if not ip.startswith(('127.', '169.254.', '198.18.', '198.19.'))
+        ]
+        for ip in valid_ips:
+            if ip.startswith(('192.168.', '10.')):
+                return ip
+        if valid_ips:
+            return valid_ips[0]
+    except Exception:
+        pass
+
+    # 3. Fallback to UDP routing socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Does not actually establish connection, just routes IP
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
+        if not ip.startswith(('127.', '169.254.', '198.18.', '198.19.')):
+            return ip
     except Exception:
-        ip = '127.0.0.1'
+        pass
     finally:
         s.close()
-    return ip
+
+    return '127.0.0.1'
 
 
 class LegadoBridge:

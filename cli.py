@@ -240,9 +240,10 @@ async def cmd_monitor(interval_minutes: int):
             await asyncio.sleep(60)
 
 
-async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000):
+async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False):
     """Display Legado integration guide and optionally export book sources."""
     import json
+    import urllib.request
     from core.legado_bridge import LegadoBridge, get_local_ip
     lan_ip = get_local_ip()
     bridge = LegadoBridge()
@@ -256,10 +257,10 @@ async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000):
     print("\n" + "=" * 65)
     print("【阅读 3.0 (Legado) 深度联动控制台】")
     print("=" * 65)
-    print(f"[*] 本机局域网 IP: {lan_ip}")
-    print(f"[*] Web 监听端口 : {port}")
+    print(f"[*] 探测到物理局域网 IP: {lan_ip}")
+    print(f"[*] 服务监听端口       : {port}")
     print("-" * 65)
-    print("1. [OPDS 无线书库] (手机连入同一 Wi-Fi 即可无线下载)")
+    print("1. [OPDS 无线书库] (手机连入同一 Wi-Fi 即可无线下载已爬小说)")
     print(f"   URL: {opds_url}")
     print("   操作: 打开阅读 App -> 书架右上角菜单 -> 添加外部书库 -> 输入上述 URL")
     print("-" * 65)
@@ -271,9 +272,9 @@ async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000):
     print(f"   手机下载: {apk_url}")
     if os.path.exists(local_apk):
         size_mb = os.path.getsize(local_apk) / (1024 * 1024)
-        print(f"   本地路径: {local_apk} ({size_mb:.2f} MB)")
+        print(f"   本地文件: {local_apk} ({size_mb:.2f} MB)")
     else:
-        print("   本地路径: 尚未就绪")
+        print("   本地文件: 尚未就绪 (访问链接将自动重定向至官方发布源)")
     print("=" * 65)
 
     if export_sources is not None:
@@ -282,9 +283,30 @@ async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000):
         with open(target_path, "w", encoding="utf-8") as f:
             json.dump(sources, f, ensure_ascii=False, indent=2)
         print(f"\n[+] 已成功导出 {len(sources)} 条精选书源到: {os.path.abspath(target_path)}\n")
+        return
+
+    if info_only:
+        return
+
+    # Check if web server is already running on this port
+    is_running = False
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/legado/info")
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
+            if resp.status == 200:
+                is_running = True
+    except Exception:
+        pass
+
+    if is_running:
+        print(f"\n[OK] Web 服务正在持续运行中 (端口: {port})")
+        print("手机保持连接相同 Wi-Fi 即可直接访问上方所有链接。\n")
     else:
-        print("\n提示: 运行 `python cli.py web --port 5000` 启动服务，手机即可通过上述链接无缝连接。")
-        print("也可使用 `python cli.py legado --export-sources` 将书源导出为本地 JSON 文件。\n")
+        print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持监听...")
+        print(">>> 手机请打开浏览器或阅读 App 访问上述地址。按 Ctrl+C 可停止服务。<<<\n")
+        from core.web_server import WebApp
+        app = WebApp(host="0.0.0.0", port=port)
+        app.start(auto_open=False)
 
 
 def main():
@@ -362,6 +384,7 @@ def main():
     p_legado = subparsers.add_parser("legado", aliases=["reader"], help="阅读 3.0 (Legado) 深度联动：展示 OPDS 无线书库、网络书源与 APK 下载地址")
     p_legado.add_argument("-s", "--export-sources", nargs="?", const="legado_sources.json", default=None, help="导出 Legado 3.0 兼容书源 JSON 文件")
     p_legado.add_argument("--port", type=int, default=5000, help="Web 服务端口，默认 5000")
+    p_legado.add_argument("--info", action="store_true", help="仅显示链接信息，不自动驻留启动 Web 服务")
 
     args = parser.parse_args()
 
@@ -397,7 +420,7 @@ def main():
         app = WebApp(host=args.host, port=args.port)
         app.start(auto_open=not args.no_open)
     elif args.command in ("legado", "reader"):
-        asyncio.run(cmd_legado(args.export_sources, args.port))
+        asyncio.run(cmd_legado(args.export_sources, args.port, args.info))
     elif args.command == "monitor":
         asyncio.run(cmd_monitor(args.interval))
 
