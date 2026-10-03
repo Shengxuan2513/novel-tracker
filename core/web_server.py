@@ -385,6 +385,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             <div class="nav-tab active" onclick="switchTab('tab-extract')"><i class="fa fa-cloud-download"></i> 通用提取器</div>
             <div class="nav-tab" onclick="switchTab('tab-bookshelf')"><i class="fa fa-bookmark"></i> 追更书架</div>
             <div class="nav-tab" onclick="switchTab('tab-files')"><i class="fa fa-folder-open"></i> 文件下载中心</div>
+            <div class="nav-tab" onclick="switchTab('tab-legado')"><i class="fa fa-mobile"></i> 阅读 3.0 联动</div>
             <div class="nav-tab" onclick="switchTab('tab-relay')"><i class="fa fa-shield"></i> 浏览器接力抗盾</div>
         </div>
     </div>
@@ -474,6 +475,75 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- Tab Legado: Legado Integration -->
+        <div id="tab-legado" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title"><i class="fa fa-mobile"></i> 阅读 3.0 (Legado) 深度联动</div>
+                    <span style="font-size: 12px; color: var(--text-muted);">局域网无线推书 / 优质书源直导 / APK 安装</span>
+                </div>
+                <div style="font-size: 14px; line-height: 1.8; color: #cbd5e1;">
+                    <p>通过 NovelTracker 与开源神器<strong>「阅读 3.0 (Legado)」</strong>深度融合，无需数据线即可实现全自动无线同步与移动端畅读：</p>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 20px 0;">
+                        <!-- Feature 1: OPDS -->
+                        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+                            <div style="font-weight: 600; color: #60a5fa; margin-bottom: 8px; font-size: 15px;">
+                                <i class="fa fa-book"></i> 1. OPDS 无线书库 (随下随看)
+                            </div>
+                            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+                                将 downloads 目录下的全部精校 EPUB/TXT 转换为标准 OPDS 书库。手机连入同一 Wi-Fi 即可无线下载。
+                            </p>
+                            <div class="input-group">
+                                <input type="text" id="legado-opds-url" class="form-control" readonly style="font-size: 12px; background: rgba(0,0,0,0.4);">
+                                <button class="btn btn-primary" onclick="copyToClipboard('legado-opds-url')"><i class="fa fa-copy"></i> 复制</button>
+                            </div>
+                            <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">
+                                <strong>使用方法</strong>: 打开阅读 App ➜ 「书架」右上角菜单 ➜ 「添加外部书库 / WebDAV」➜ 填入上方 URL。
+                            </div>
+                        </div>
+
+                        <!-- Feature 2: BookSource -->
+                        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+                            <div style="font-weight: 600; color: #c084fc; margin-bottom: 8px; font-size: 15px;">
+                                <i class="fa fa-code-fork"></i> 2. 精校书源一键网络导入
+                            </div>
+                            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+                                经过 NovelTracker 验证的高可用免防爬书源规则（支持多页章节自动拼接与正文纯净化）。
+                            </p>
+                            <div class="input-group">
+                                <input type="text" id="legado-sources-url" class="form-control" readonly style="font-size: 12px; background: rgba(0,0,0,0.4);">
+                                <button class="btn btn-primary" onclick="copyToClipboard('legado-sources-url')"><i class="fa fa-copy"></i> 复制</button>
+                            </div>
+                            <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">
+                                <strong>使用方法</strong>: 打开阅读 App ➜ 「我的」➜ 「书源管理」➜ 右上角菜单 ➜ 「网络导入」➜ 粘贴上方 URL。
+                            </div>
+                        </div>
+
+                        <!-- Feature 3: APK Direct Download -->
+                        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+                            <div style="font-weight: 600; color: #34d399; margin-bottom: 8px; font-size: 15px;">
+                                <i class="fa fa-android"></i> 3. 手机客户端直接获取
+                            </div>
+                            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+                                针对已识别的 Mate 30E Pro 5G (Kirin 990E / 64位 ARM) 精准匹配的官方纯净无广告安装包。
+                            </p>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <a id="legado-apk-download-btn" href="/legado.apk" class="btn btn-primary" style="flex: 1; text-align: center; text-decoration: none;" download>
+                                    <i class="fa fa-download"></i> 下载 Legado 3.26 APK (9.8 MB)
+                                </a>
+                                <button class="btn btn-secondary" onclick="copyToClipboard('legado-apk-url')"><i class="fa fa-link"></i> 复制下载链接</button>
+                            </div>
+                            <input type="hidden" id="legado-apk-url">
+                            <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">
+                                <strong>华为手机提示</strong>: 安装时如提示“外部来源应用”，点击“继续安装”或“解除管控”即可，100% 官方开源安全。
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Tab 4: Relay & Anti-WAF -->
         <div id="tab-relay" class="tab-content">
             <div class="card">
@@ -512,6 +582,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
 
             if (tabId === 'tab-bookshelf') loadBookshelf();
             if (tabId === 'tab-files') loadFiles();
+            if (tabId === 'tab-legado') loadLegadoInfo();
         }
 
         // Start Universal Extraction
@@ -687,6 +758,41 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                 tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger);">加载失败: ${err}</td></tr>`;
             }
         }
+
+        // Legado Info & Copy
+        async function loadLegadoInfo() {
+            try {
+                const res = await fetch('/api/legado/info');
+                const data = await res.json();
+                document.getElementById('legado-opds-url').value = data.opds_url;
+                document.getElementById('legado-sources-url').value = data.sources_url;
+                document.getElementById('legado-apk-url').value = data.apk_url;
+            } catch (err) {
+                console.error('Failed to load legado info:', err);
+            }
+        }
+
+        function copyToClipboard(elementId) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            el.select();
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(el.value).then(() => {
+                    showToast('已成功复制链接到剪贴板！');
+                }).catch(() => {
+                    document.execCommand('copy');
+                    showToast('已成功复制链接到剪贴板！');
+                });
+            } else {
+                document.execCommand('copy');
+                showToast('已成功复制链接到剪贴板！');
+            }
+        }
+
+        // Initial preload
+        window.addEventListener('DOMContentLoaded', () => {
+            loadLegadoInfo();
+        });
     </script>
 </body>
 </html>
@@ -936,6 +1042,41 @@ class WebApp:
         await resp.write_eof()
         return resp
 
+    async def handle_opds(self, request: web.Request) -> web.Response:
+        from core.legado_bridge import LegadoBridge, get_local_ip
+        bridge = LegadoBridge(downloads_dir=self.output_dir)
+        host_url = f"http://{get_local_ip()}:{self.port}"
+        feed_xml = bridge.generate_opds_feed(host_url)
+        return web.Response(text=feed_xml, content_type="application/atom+xml", charset="utf-8")
+
+    async def handle_legado_sources(self, request: web.Request) -> web.Response:
+        from core.legado_bridge import LegadoBridge
+        bridge = LegadoBridge()
+        sources = bridge.generate_legado_book_sources()
+        return web.json_response(sources)
+
+    async def handle_legado_apk(self, request: web.Request) -> web.Response:
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
+        if os.path.exists(apk_path):
+            return web.FileResponse(apk_path)
+        upstream_url = "https://github.com/huajideshutiao/legado/releases/download/3.26.100113/legado-3.26.100113-huaji-arm64-v8a-release.apk"
+        raise web.HTTPFound(upstream_url)
+
+    async def handle_legado_info(self, request: web.Request) -> web.Response:
+        from core.legado_bridge import get_local_ip
+        lan_ip = get_local_ip()
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
+        return web.json_response({
+            "lan_ip": lan_ip,
+            "port": self.port,
+            "opds_url": f"http://{lan_ip}:{self.port}/opds",
+            "sources_url": f"http://{lan_ip}:{self.port}/api/legado/sources.json",
+            "apk_url": f"http://{lan_ip}:{self.port}/legado.apk",
+            "apk_exists": os.path.exists(apk_path)
+        })
+
     def start(self, auto_open: bool = True):
         app = web.Application()
         app.router.add_get("/", self.handle_index)
@@ -947,18 +1088,32 @@ class WebApp:
         app.router.add_get("/api/download/{filename}", self.handle_download_file)
         app.router.add_post("/api/extract", self.handle_extract_stream)
 
-        url = f"http://{self.host}:{self.port}"
+        # Legado (阅读 3.0) Integration Endpoints
+        app.router.add_get("/opds", self.handle_opds)
+        app.router.add_get("/api/legado/sources.json", self.handle_legado_sources)
+        app.router.add_get("/api/legado/info", self.handle_legado_info)
+        app.router.add_get("/legado.apk", self.handle_legado_apk)
+
+        local_url = f"http://127.0.0.1:{self.port}"
+        from core.legado_bridge import get_local_ip
+        lan_ip = get_local_ip()
+
         print("=" * 65)
-        print("🚀 【NovelTracker 2.0 可视化图形控制台 (Web UI)】已启动")
-        print(f"🌐 访问地址: {url}")
-        print(f"📁 默认文件存储路径: {os.path.abspath(self.output_dir)}")
-        print("按 Ctrl+C 可停止 Web 服务。")
+        print("[+] NovelTracker 2.0 Web Dashboard started")
+        print(f"[*] Local access: {local_url}")
+        print(f"[*] Storage path: {os.path.abspath(self.output_dir)}")
+        print("-" * 65)
+        print("[+] Legado (阅读 3.0) Mobile Integration:")
+        print(f"  [-] OPDS Catalog Feed : http://{lan_ip}:{self.port}/opds")
+        print(f"  [-] BookSource Sync   : http://{lan_ip}:{self.port}/api/legado/sources.json")
+        print(f"  [-] Legado arm64 APK  : http://{lan_ip}:{self.port}/legado.apk")
+        print("Press Ctrl+C to stop.")
         print("=" * 65 + "\n")
 
         if auto_open:
             import webbrowser
             try:
-                webbrowser.open(url)
+                webbrowser.open(local_url)
             except Exception:
                 pass
 

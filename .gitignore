@@ -16,6 +16,7 @@ ENV/
 storage/
 source_cache.json
 *.tmp
+*.apk
 
 # User Configurations & State
 config.json
