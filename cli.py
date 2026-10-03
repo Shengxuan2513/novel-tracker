@@ -240,11 +240,50 @@ async def cmd_monitor(interval_minutes: int):
             await asyncio.sleep(60)
 
 
-def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False):
-    """Display Legado integration guide and optionally export book sources."""
+def find_pid_by_port(port: int) -> Optional[int]:
+    """Find listening process PID on given TCP port."""
+    try:
+        import psutil
+        for conn in psutil.net_connections(kind='inet'):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                return conn.pid
+    except Exception:
+        pass
+    return None
+
+
+def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False, stop: bool = False, restart: bool = False):
+    """Display Legado integration guide and optionally export book sources or manage server."""
     import json
     import urllib.request
     from core.legado_bridge import LegadoBridge, get_local_ip
+
+    if stop:
+        pid = find_pid_by_port(port)
+        if pid:
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                p.terminate()
+                print(f"[+] 已成功终止后台服务进程 (PID: {pid}, 端口: {port})")
+            except Exception as e:
+                print(f"[-] 终止进程失败: {e}")
+        else:
+            print(f"[*] 端口 {port} 上未检测到运行中的服务进程。")
+        return
+
+    if restart:
+        pid = find_pid_by_port(port)
+        if pid:
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                p.terminate()
+                p.wait(timeout=3)
+                print(f"[+] 已终止旧服务进程 (PID: {pid})")
+            except Exception:
+                pass
+
     lan_ip = get_local_ip()
     bridge = LegadoBridge()
 
@@ -298,11 +337,15 @@ def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only
     except Exception:
         pass
 
-    if is_running:
-        print(f"\n[OK] Web 服务正在持续运行中 (端口: {port})")
-        print("手机保持连接相同 Wi-Fi 即可直接访问上方所有链接。\n")
+    if is_running and not restart:
+        pid = find_pid_by_port(port)
+        pid_str = f" (PID: {pid})" if pid else ""
+        print(f"\n[OK] Web 服务正在后台常驻运行中{pid_str} (端口: {port})")
+        print("手机保持连接相同 Wi-Fi 即可直接访问上方所有链接。")
+        print("提示: 若需在前台实时查看连接日志，可执行: python cli.py legado --restart")
+        print("      若需停止后台常驻服务，可执行    : python cli.py legado --stop\n")
     else:
-        print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持监听...")
+        print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持前台监听...")
         print(">>> 手机请打开浏览器或阅读 App 访问上述地址。按 Ctrl+C 可停止服务。<<<\n")
         from core.web_server import WebApp
         app = WebApp(host="0.0.0.0", port=port)
@@ -385,6 +428,8 @@ def main():
     p_legado.add_argument("-s", "--export-sources", nargs="?", const="legado_sources.json", default=None, help="导出 Legado 3.0 兼容书源 JSON 文件")
     p_legado.add_argument("--port", type=int, default=5000, help="Web 服务端口，默认 5000")
     p_legado.add_argument("--info", action="store_true", help="仅显示链接信息，不自动驻留启动 Web 服务")
+    p_legado.add_argument("--stop", action="store_true", help="停止当前运行中的后台服务进程")
+    p_legado.add_argument("--restart", action="store_true", help="重启服务并在前台窗口保持运行与输出日志")
 
     args = parser.parse_args()
 
@@ -420,7 +465,7 @@ def main():
         app = WebApp(host=args.host, port=args.port)
         app.start(auto_open=not args.no_open)
     elif args.command in ("legado", "reader"):
-        cmd_legado(args.export_sources, args.port, args.info)
+        cmd_legado(args.export_sources, args.port, args.info, args.stop, args.restart)
     elif args.command == "monitor":
         asyncio.run(cmd_monitor(args.interval))
 
