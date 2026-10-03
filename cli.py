@@ -240,7 +240,7 @@ async def cmd_monitor(interval_minutes: int):
             await asyncio.sleep(60)
 
 
-async def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False):
+def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False):
     """Display Legado integration guide and optionally export book sources."""
     import json
     import urllib.request
@@ -420,7 +420,7 @@ def main():
         app = WebApp(host=args.host, port=args.port)
         app.start(auto_open=not args.no_open)
     elif args.command in ("legado", "reader"):
-        asyncio.run(cmd_legado(args.export_sources, args.port, args.info))
+        cmd_legado(args.export_sources, args.port, args.info)
     elif args.command == "monitor":
         asyncio.run(cmd_monitor(args.interval))
 
