@@ -995,7 +995,7 @@ class WebApp:
         filepath = os.path.join(self.output_dir, filename)
         if not os.path.exists(filepath):
             return web.Response(status=404, text="File Not Found")
-        return web.FileResponse(filepath)
+        return web.FileResponse(filepath, chunk_size=512 * 1024)
 
     async def handle_extract_stream(self, request: web.Request) -> web.StreamResponse:
         data = await request.json()
@@ -1059,7 +1059,7 @@ class WebApp:
         base_dir = os.path.dirname(os.path.dirname(__file__))
         apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
         if os.path.exists(apk_path):
-            return web.FileResponse(apk_path)
+            return web.FileResponse(apk_path, chunk_size=512 * 1024)
         upstream_url = "https://github.com/huajideshutiao/legado/releases/download/3.26.100113/legado-3.26.100113-huaji-arm64-v8a-release.apk"
         raise web.HTTPFound(upstream_url)
 
