@@ -27,3 +27,6 @@ watchlist.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Immutable book download snapshots
+**/.download-snapshots/

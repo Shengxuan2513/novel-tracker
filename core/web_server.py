@@ -991,11 +991,35 @@ class WebApp:
         return web.json_response({"files": file_list})
 
     async def handle_download_file(self, request: web.Request) -> web.Response:
-        filename = urllib.parse.unquote(request.match_info["filename"])
-        filepath = os.path.join(self.output_dir, filename)
-        if not os.path.exists(filepath):
+        from core.versioned_download import file_version, snapshot_file, StaleDownload
+
+        # aiohttp has already decoded this path parameter. Do not decode twice.
+        filename = request.match_info["filename"]
+        if filename in (".", "..") or any(char in filename for char in ("/", "\\", "\x00")):
             return web.Response(status=404, text="File Not Found")
-        return web.FileResponse(filepath, chunk_size=512 * 1024)
+        filepath = os.path.realpath(os.path.join(self.output_dir, filename))
+        root = os.path.realpath(self.output_dir)
+        if os.path.commonpath([root, filepath]) != root:
+            return web.Response(status=404, text="File Not Found")
+        version = request.match_info.get("version")
+        if version is None:
+            if not os.path.isfile(filepath):
+                return web.Response(status=404, text="File Not Found")
+            return web.FileResponse(filepath, chunk_size=512 * 1024)
+        try:
+            snapshot = await asyncio.to_thread(snapshot_file, filepath, version)
+        except (FileNotFoundError, IsADirectoryError):
+            return web.Response(status=404, text="File Not Found")
+        except StaleDownload:
+            try:
+                latest_version = file_version(os.stat(filepath))
+            except FileNotFoundError:
+                return web.Response(status=404, text="File Not Found")
+            latest = f"/api/download/version/{latest_version}/{urllib.parse.quote(filename, safe='')}"
+            return web.Response(status=410, text="书籍已更新，请刷新外部书库或更新目录。", headers={
+                "Cache-Control": "no-store", "X-NovelTracker-Latest-URL": latest,
+            })
+        return web.FileResponse(snapshot, chunk_size=512 * 1024, headers={"Cache-Control": "no-cache"})
 
     async def handle_extract_stream(self, request: web.Request) -> web.StreamResponse:
         data = await request.json()
@@ -1155,6 +1179,7 @@ class WebApp:
         app.router.add_post("/api/bookshelf/check", self.handle_check_bookshelf)
         app.router.add_get("/api/files", self.handle_list_files)
         app.router.add_get("/api/download/{filename}", self.handle_download_file)
+        app.router.add_get("/api/download/version/{version}/{filename}", self.handle_download_file)
         app.router.add_post("/api/extract", self.handle_extract_stream)
 
         # Legado (阅读 3.0) Integration Endpoints (OPDS + WebDAV)
