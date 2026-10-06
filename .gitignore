@@ -27,3 +27,6 @@ watchlist.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Generated community reader source and build products
+client/legado-source/
