@@ -1043,9 +1043,9 @@ class WebApp:
         return resp
 
     async def handle_opds(self, request: web.Request) -> web.Response:
-        from core.legado_bridge import LegadoBridge, get_local_ip
+        from core.legado_bridge import LegadoBridge
         bridge = LegadoBridge(downloads_dir=self.output_dir)
-        host_url = f"http://{get_local_ip()}:{self.port}"
+        host_url = f"{request.scheme}://{request.host}"
         feed_xml = bridge.generate_opds_feed(host_url)
         return web.Response(text=feed_xml, content_type="application/atom+xml", charset="utf-8")
 

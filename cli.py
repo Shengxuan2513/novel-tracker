@@ -348,7 +348,7 @@ def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only
         print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持前台监听...")
         print(">>> 手机请打开浏览器或阅读 App 访问上述地址。按 Ctrl+C 可停止服务。<<<\n")
         from core.web_server import WebApp
-        app = WebApp(host="0.0.0.0", port=port)
+        app = WebApp(host="0.0.0.0", port=port, output_dir=os.path.join(base_dir, "downloads"))
         app.start(auto_open=False)
 
 
