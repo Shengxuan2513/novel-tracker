@@ -1,6 +1,7 @@
 from setuptools import setup, find_packages
+from pathlib import Path
 
-with open("README.md", "r", encoding="utf-8") as fh:
+with (Path(__file__).parent / "README.md").open("r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
@@ -10,8 +11,10 @@ setup(
     description="基于“主索引探针 + 多源降级回源”的分布式小说聚合监控与通用提取系统",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/YOUR_USERNAME/novel-tracker",
-    packages=find_packages(),
+    url="https://github.com/Shengxuan2513/novel-tracker",
+    packages=find_packages(exclude=["tests", "tests.*"]),
+    py_modules=["cli"],
+    package_data={"sources": ["rules/*.json"]},
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
@@ -30,7 +33,10 @@ setup(
         "beautifulsoup4>=4.11.0",
         "lxml>=4.9.0",
         "trafilatura>=1.6.0",
+        "ebooklib>=0.20",
+        "psutil>=5.9",
     ],
+    extras_require={"test": ["pytest>=7"]},
     entry_points={
         "console_scripts": [
             "novel-tracker=cli:main",

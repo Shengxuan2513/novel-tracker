@@ -15,6 +15,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from xml.sax.saxutils import escape
+from core.paths import downloads_dir as default_downloads_dir
 
 
 def get_local_ip() -> str:
@@ -85,8 +86,8 @@ def get_local_ip() -> str:
 
 
 class LegadoBridge:
-    def __init__(self, downloads_dir: str = "downloads", client_dir: str = "client"):
-        self.downloads_dir = downloads_dir
+    def __init__(self, downloads_dir: Optional[str] = None, client_dir: str = "client"):
+        self.downloads_dir = downloads_dir or default_downloads_dir()
         self.client_dir = client_dir
 
     def generate_opds_feed(self, host_url: str) -> str:

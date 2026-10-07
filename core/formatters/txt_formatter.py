@@ -7,8 +7,12 @@ import os
 from typing import List, Tuple, Dict
 
 
+from core.safe_publish import atomic_export
+
+
 class TxtFormatter:
     @staticmethod
+    @atomic_export
     def export(
         output_path: str,
         book_meta: Dict[str, str],
@@ -25,7 +29,8 @@ class TxtFormatter:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(f"《{title}》\n")
             f.write(f"作者：{author}\n")
-            f.write(f"【全书完整正文版】共 {len(chapters)} 章\n")
+            label = "未完整，含暂缺章节" if book_meta.get("complete") is False else "正文导出版"
+            f.write(f"【{label}】共 {len(chapters)} 章\n")
             if source_url:
                 f.write(f"提取来源：{source_url}\n")
             f.write("=" * 60 + "\n\n")

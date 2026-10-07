@@ -27,3 +27,8 @@ watchlist.json
 .idea/
 .DS_Store
 Thumbs.db
+**/.novel-locks/
+*.bak
+build/
+dist/
+*.egg-info/

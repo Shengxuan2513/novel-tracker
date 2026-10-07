@@ -1,157 +1,116 @@
-"""
-Chapter-Level Chunked Storage and Incremental Cache Engine.
-Stores novel chapters as independent atomic files under storage/books/{book_hash}/chapters/
-to enable sub-second incremental updates, offline resume, and stream export.
-"""
-
+"""Chapter cache validated against the current book and chapter identity."""
 import hashlib
 import json
 import os
 import re
+import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple
+from core.parser import extract_chapter_number
+from core.book_document import BAD_CONTENT
+
+
+def chapter_identity(title):
+    number = extract_chapter_number(title)[0]
+    tail = re.sub(r"^第\s*[0-9〇零一二两三四五六七八九十百千万]+\s*[章节回节篇]", "", title.strip())
+    tail = re.sub(r"^Chapter\s*\d+", "", tail, flags=re.I)
+    return number, re.sub(r"[\W_]+", "", tail).casefold()
 
 
 class ChapterStorage:
-    def __init__(self, base_storage_dir: Optional[str] = None):
+    def __init__(self, base_storage_dir=None):
         if base_storage_dir is None:
-            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.base_storage_dir = os.path.join(root_dir, "storage", "books")
-        else:
-            self.base_storage_dir = base_storage_dir
-
+            from core.paths import data_dir
+            base_storage_dir = os.path.join(data_dir(), "storage", "books")
+        self.base_storage_dir = str(base_storage_dir)
         os.makedirs(self.base_storage_dir, exist_ok=True)
 
-    def _get_book_key(self, book_name: str) -> str:
-        """Generate safe, clean alphanumeric key for novel."""
+    def _get_book_key(self, book_name, author=""):
         clean = book_name.strip().replace("《", "").replace("》", "")
-        # md5 hash suffix to ensure safety across file systems
-        md5_suffix = hashlib.md5(clean.encode("utf-8")).hexdigest()[:8]
-        safe_name = re.sub(r'[^\w\u4e00-\u9fa5]', '_', clean)
-        return f"{safe_name}_{md5_suffix}"
+        author = author.strip() if author and author != "未知" else ""
+        identity = clean + ("|" + author if author else "")
+        digest = hashlib.md5(identity.encode("utf-8")).hexdigest()[:8]
+        return re.sub(r"[^\w\u4e00-\u9fa5]", "_", clean) + "_" + digest
 
-    def get_book_dir(self, book_name: str) -> str:
-        """Get or create directory for a novel's chapters."""
-        book_key = self._get_book_key(book_name)
-        book_dir = os.path.join(self.base_storage_dir, book_key)
-        chap_dir = os.path.join(book_dir, "chapters")
-        os.makedirs(chap_dir, exist_ok=True)
-        return book_dir
+    def get_book_dir(self, book_name, author=""):
+        directory = os.path.join(self.base_storage_dir, self._get_book_key(book_name, author))
+        os.makedirs(os.path.join(directory, "chapters"), exist_ok=True)
+        return directory
 
-    def get_chapters_dir(self, book_name: str) -> str:
-        book_dir = self.get_book_dir(book_name)
-        return os.path.join(book_dir, "chapters")
+    def get_chapters_dir(self, book_name, author=""):
+        return os.path.join(self.get_book_dir(book_name, author), "chapters")
 
-    def get_cached_indices(self, book_name: str) -> Set[int]:
-        """
-        Returns set of valid chapter indices already downloaded and cached locally.
-        Only counts chapters with valid length (>= 200 chars) and no error notice.
-        """
-        chap_dir = self.get_chapters_dir(book_name)
-        cached_indices = set()
+    @staticmethod
+    def valid(data, title=None, min_chars=100, number=None):
+        if not isinstance(data, dict):
+            return False
+        content = data.get("content", "")
+        if not isinstance(content, str) or not isinstance(data.get("title", ""), str):
+            return False
+        if data.get("complete") is not True or len(re.sub(r"\s", "", content)) < min_chars:
+            return False
+        if any(marker in content for marker in BAD_CONTENT):
+            return False
+        if title is not None and chapter_identity(data.get("title", "")) != chapter_identity(title):
+            return False
+        if number is not None and extract_chapter_number(data.get("title", ""))[0] != number:
+            return False
+        return True
 
-        if not os.path.exists(chap_dir):
-            return cached_indices
+    def get_cached_indices(self, book_name, author="", expected_chapters=None, min_chars=100):
+        expected = {row[0]: row for row in expected_chapters} if expected_chapters is not None else None
+        indices = set()
+        for row in self.load_all_chapters(book_name, author):
+            index = row[0]
+            data = self.get_chapter(book_name, index, author)
+            if data is None or (expected is not None and index not in expected):
+                continue
+            wanted = expected[index] if expected is not None else None
+            if self.valid(data, title=wanted[1] if wanted else None,
+                          number=wanted[3] if wanted else None, min_chars=min_chars):
+                indices.add(index)
+        return indices
 
-        for fn in os.listdir(chap_dir):
-            if fn.endswith(".json"):
-                try:
-                    idx_str = fn.split(".")[0]
-                    idx = int(idx_str)
-                    filepath = os.path.join(chap_dir, fn)
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        content = data.get("content", "")
-                        if content and len(content) >= 100 and "暂缺" not in content and "抓取异常" not in content:
-                            if not any(k in content for k in ("微信扫码", "开通付费会员", "已读到0%", "屋里没人", "沉没。淹没。")):
-                                cached_indices.add(idx)
-                except Exception:
-                    pass
-
-        return cached_indices
-
-    def get_chapter(self, book_name: str, index: int) -> Optional[dict]:
-        """Retrieve a specific cached chapter."""
-        chap_dir = self.get_chapters_dir(book_name)
-        filepath = os.path.join(chap_dir, f"{index:05d}.json")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return None
-        return None
-
-    def save_chapter(
-        self,
-        book_name: str,
-        index: int,
-        title: str,
-        content: str,
-        url: str = "",
-        source_domain: str = ""
-    ) -> None:
-        """
-        Saves a single chapter to disk with atomic write.
-        """
-        chap_dir = self.get_chapters_dir(book_name)
-        filepath = os.path.join(chap_dir, f"{index:05d}.json")
-        tmp_path = f"{filepath}.tmp"
-
-        payload = {
-            "index": index,
-            "title": title.strip(),
-            "url": url.strip(),
-            "source_domain": source_domain.strip(),
-            "char_count": len(content),
-            "content": content,
-            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-
+    def get_chapter(self, book_name, index, author=""):
+        path = os.path.join(self.get_chapters_dir(book_name, author), f"{index:05d}.json")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            if os.path.exists(filepath):
-                os.replace(tmp_path, filepath)
-            else:
-                os.rename(tmp_path, filepath)
-        except Exception:
+            with open(path, encoding="utf-8") as file:
+                data = json.load(file)
+                return data if isinstance(data, dict) else None
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def save_chapter(self, book_name, index, title, content, url="", source_domain="",
+                     complete=True, author=""):
+        directory = self.get_chapters_dir(book_name, author)
+        path = os.path.join(directory, f"{index:05d}.json")
+        payload = {"index": index, "title": title.strip(), "content": content,
+                   "url": url.strip(), "source_domain": source_domain.strip(),
+                   "complete": complete, "author": author, "char_count": len(content),
+                   "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        descriptor, temporary = tempfile.mkstemp(prefix=".chapter-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def load_all_chapters(self, book_name, author=""):
+        chapters = []
+        directory = self.get_chapters_dir(book_name, author)
+        for filename in sorted(os.listdir(directory)):
+            if not filename.endswith(".json"):
+                continue
             try:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+                index = int(filename.split(".")[0])
+                data = self.get_chapter(book_name, index, author)
+                if data is not None:
+                    chapters.append((index, data.get("title", ""), data.get("content", "")))
+            except (ValueError, OSError):
+                continue
+        return sorted(chapters)
 
-    def load_all_chapters(self, book_name: str) -> List[Tuple[int, str, str]]:
-        """
-        Loads all cached chapters sorted by index.
-        Returns: [(index, title, content), ...]
-        """
-        chap_dir = self.get_chapters_dir(book_name)
-        chapters: List[Tuple[int, str, str]] = []
-
-        if not os.path.exists(chap_dir):
-            return chapters
-
-        for fn in sorted(os.listdir(chap_dir)):
-            if fn.endswith(".json"):
-                filepath = os.path.join(chap_dir, fn)
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        idx = data.get("index", 0)
-                        title = data.get("title", f"第{idx}章")
-                        content = data.get("content", "")
-                        chapters.append((idx, title, content))
-                except Exception:
-                    pass
-
-        chapters.sort(key=lambda x: x[0])
-        return chapters
-
-    def clear_cache(self, book_name: str) -> None:
-        """Clear cached chapters for a novel."""
+    def clear_cache(self, book_name, author=""):
         import shutil
-        book_dir = self.get_book_dir(book_name)
-        if os.path.exists(book_dir):
-            shutil.rmtree(book_dir, ignore_errors=True)
+        shutil.rmtree(self.get_book_dir(book_name, author), ignore_errors=True)

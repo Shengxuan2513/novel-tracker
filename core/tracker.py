@@ -7,13 +7,16 @@ import json
 import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from core.paths import data_dir
+from core.safe_publish import publish_outputs
+from pathlib import Path
 
 
 class NovelTracker:
     def __init__(self, storage_path: Optional[str] = None):
         if storage_path is None:
             # Default to watchlist.json in current work directory
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            base_dir = data_dir()
             self.storage_path = os.path.join(base_dir, "watchlist.json")
         else:
             self.storage_path = storage_path
@@ -34,9 +37,9 @@ class NovelTracker:
 
     def save(self) -> None:
         """Save watchlist to disk."""
-        os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        with publish_outputs([self.storage_path]) as staged:
+            with open(staged[str(Path(self.storage_path).resolve())], "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def get_all(self) -> List[dict]:
         """Return all tracked novels as a list."""
