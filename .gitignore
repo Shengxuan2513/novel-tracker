@@ -30,3 +30,6 @@ Thumbs.db
 
 # Generated community reader source and build products
 client/legado-source/
+
+# Immutable book download snapshots
+**/.download-snapshots/
