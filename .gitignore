@@ -32,3 +32,9 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Generated community reader source and build products
+client/legado-source/
+
+# Immutable book download snapshots
+**/.download-snapshots/

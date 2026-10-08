@@ -1027,6 +1027,8 @@ class WebApp:
         return web.json_response({"files": file_list})
 
     async def handle_download_file(self, request: web.Request) -> web.Response:
+        from core.versioned_download import file_version, snapshot_file, StaleDownload
+
         # aiohttp has decoded the parameter once; literal percent names stay literal.
         filename = request.match_info["filename"]
         if filename in (".", "..") or any(char in filename for char in ("/", "\\", "\x00")):
@@ -1039,7 +1041,23 @@ class WebApp:
             inside = False
         if not inside or not os.path.isfile(filepath) or not filename.lower().endswith((".txt", ".epub", ".json")):
             return web.Response(status=404, text="File Not Found")
-        return web.FileResponse(filepath, chunk_size=512 * 1024)
+        version = request.match_info.get("version")
+        if version is None:
+            return web.FileResponse(filepath, chunk_size=512 * 1024)
+        try:
+            snapshot = await asyncio.to_thread(snapshot_file, filepath, version)
+        except (FileNotFoundError, IsADirectoryError):
+            return web.Response(status=404, text="File Not Found")
+        except StaleDownload:
+            try:
+                latest_version = file_version(os.stat(filepath))
+            except FileNotFoundError:
+                return web.Response(status=404, text="File Not Found")
+            latest = f"/api/download/version/{latest_version}/{urllib.parse.quote(filename, safe='')}"
+            return web.Response(status=410, text="书籍已更新，请刷新外部书库或更新目录。", headers={
+                "Cache-Control": "no-store", "X-NovelTracker-Latest-URL": latest,
+            })
+        return web.FileResponse(snapshot, chunk_size=512 * 1024, headers={"Cache-Control": "no-cache"})
 
     @staticmethod
     async def _json_object(request):
@@ -1141,9 +1159,12 @@ class WebApp:
 
     async def handle_legado_apk(self, request: web.Request) -> web.Response:
         base_dir = os.path.dirname(os.path.dirname(__file__))
-        apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
+        fixed = request.path == "/legado-fixed.apk"
+        apk_path = os.path.join(base_dir, "client", "legado-epubfix-arm64.apk" if fixed else "legado-3.26-arm64.apk")
         if os.path.exists(apk_path):
             return web.FileResponse(apk_path, chunk_size=512 * 1024)
+        if fixed:
+            return web.Response(status=404, text="修复版 APK 未安装，请从配套客户端 Release 下载到 client/legado-epubfix-arm64.apk。")
         upstream_url = "https://github.com/huajideshutiao/legado/releases/download/3.26.100113/legado-3.26.100113-huaji-arm64-v8a-release.apk"
         raise web.HTTPFound(upstream_url)
 
@@ -1246,6 +1267,7 @@ class WebApp:
         app.router.add_post("/api/bookshelf/check", self.handle_check_bookshelf)
         app.router.add_get("/api/files", self.handle_list_files)
         app.router.add_get("/api/download/{filename}", self.handle_download_file)
+        app.router.add_get("/api/download/version/{version}/{filename}", self.handle_download_file)
         app.router.add_post("/api/extract", self.handle_extract_stream)
 
         # Legado (阅读 3.0) Integration Endpoints (OPDS + WebDAV)
@@ -1253,6 +1275,7 @@ class WebApp:
         app.router.add_get("/api/legado/sources.json", self.handle_legado_sources)
         app.router.add_get("/api/legado/info", self.handle_legado_info)
         app.router.add_get("/legado.apk", self.handle_legado_apk)
+        app.router.add_get("/legado-fixed.apk", self.handle_legado_apk)
 
         # WebDAV Support for Legado 3.0 "远程书籍"
         for p in ["/", "/opds", "/webdav", "/downloads", "/downloads/"]:
