@@ -15,17 +15,22 @@ from core.heuristic_extractor import HeuristicExtractor
 from core.pipeline import RegexCleaningPipeline
 from core.fallback_router import FallbackRouter
 from core.probe import MasterProbe, ChapterMetadata
+from core.chapter_fetcher import fetch_complete_chapter
+from core.safe_publish import publish_outputs, capture_states
+from pathlib import Path
+import re
+from core.paths import downloads_dir
 
 
 class NovelDownloader:
     def __init__(
         self,
-        output_dir: str = "downloads",
+        output_dir: Optional[str] = None,
         concurrency: int = 12,
         timeout: float = 10.0,
         min_char_length: int = 500
     ):
-        self.output_dir = output_dir
+        self.output_dir = output_dir or downloads_dir()
         self.concurrency = concurrency
         self.timeout = timeout
         self.probe = MasterProbe(timeout=timeout)
@@ -62,22 +67,10 @@ class NovelDownloader:
 
             # 1. Attempt primary node extraction
             try:
-                resp = await client.get(chapter.url, timeout=self.timeout)
-                if resp.status_code == 200:
-                    enc = resp.encoding if resp.encoding and resp.encoding != 'iso-8859-1' else 'utf-8'
-                    try:
-                        html = resp.content.decode(enc, errors='replace')
-                    except Exception:
-                        html = resp.text
-
-                    # Heuristic extraction
-                    raw_text = self.extractor.extract_article_text(html, url=chapter.url)
-                    # Pipeline cleaning & validation (raises DataIncompleteError if length < min_char_length)
-                    clean_body = self.pipeline.clean_text(
-                        raw_text=raw_text,
-                        chapter_title=chapter.title,
-                        source_url=chapter.url
-                    )
+                clean_body = await fetch_complete_chapter(
+                    client, chapter.url, chapter.title, self.extractor,
+                    min_chars=self.pipeline.min_char_length)
+                self.pipeline.validator.validate_and_record(chapter.title, clean_body, chapter.url)
             except (DataIncompleteError, Exception):
                 clean_body = None
 
@@ -88,7 +81,10 @@ class NovelDownloader:
                         novel_name=novel_name,
                         chapter_title=chapter.title
                     )
-                    clean_body = fallback_text
+                    clean_body = await fetch_complete_chapter(
+                        client, fallback_url, chapter.title, self.extractor,
+                        min_chars=self.pipeline.min_char_length)
+                    self.pipeline.validator.validate_and_record(chapter.title, clean_body, fallback_url)
                     source_info = f"降级回源 ({fallback_url[:30]}...)"
                 except SourceExhaustedError:
                     clean_body = f"    (全网源站暂未获取到本章完整正文)\n"
@@ -110,6 +106,8 @@ class NovelDownloader:
         """
         Downloads novel chapters using MasterProbe + FallbackRouter architecture.
         """
+        initial = capture_states([os.path.join(self.output_dir, name) for name in os.listdir(self.output_dir)
+                                  if os.path.isfile(os.path.join(self.output_dir, name))])
         print(f"📡 [MasterProbe] 正在探测目录元数据: {catalog_url} ...")
         chapters = await self.probe.probe_catalog(catalog_url)
 
@@ -122,9 +120,16 @@ class NovelDownloader:
             chapters_to_download = chapters_to_download[:limit_chapters]
 
         total = len(chapters_to_download)
+        if not total:
+            print("⚠️ 指定范围内没有章节，已有文件未修改。")
+            return None
         print(f"📚 [Scheduler] 已就绪 {len(chapters)} 章元数据，准备调度下载 {total} 章完整正文...")
 
-        output_filename = f"《{novel_name}》.txt"
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", novel_name).rstrip(". ") or "未命名小说"
+        suffix = ""
+        if start_chapter > 1 or limit_chapters is not None:
+            suffix = f"（章节范围{start_chapter}-{chapters_to_download[-1].index}）"
+        output_filename = f"《{safe_name}》{suffix}.txt"
         output_file_path = os.path.join(self.output_dir, output_filename)
 
         semaphore = asyncio.Semaphore(self.concurrency)
@@ -149,14 +154,24 @@ class NovelDownloader:
 
         print(f"\n\n💾 采集完毕 (共触发 {fallback_count} 次多源降级回源)，正在规范化合并至落盘文件...")
         results.sort(key=lambda x: x[0])
+        failures = sum(row[3] in ("异常", "回源耗尽") for row in results)
+        if failures == len(results):
+            print("❌ 未取得有效正文，已有文件未修改。")
+            return None
+        if failures:
+            output_file_path = os.path.splitext(output_file_path)[0] + "（未完整）.txt"
+            print(f"⚠️ 部分完成：仍有 {failures} 章暂缺，结果另存，不覆盖完整版本。")
+        expected = {str(Path(output_file_path).resolve()): initial.get(str(Path(output_file_path).resolve()))}
 
-        with open(output_file_path, "w", encoding="utf-8") as f:
-            f.write(f"《{novel_name}》\n\n")
-            f.write(f"【多源保障完整正文版】共 {len(results)} 章\n")
-            f.write(f"主索引源: {catalog_url}\n")
-            f.write("=" * 60 + "\n\n")
-            for _, _, content, _ in results:
-                f.write(content + "\n")
+        with publish_outputs([output_file_path], expected=expected) as staged:
+            with open(staged[str(Path(output_file_path).resolve())], "w", encoding="utf-8") as f:
+                f.write(f"《{novel_name}》\n\n")
+                label = "未完整，含暂缺章节" if failures else "正文导出版"
+                f.write(f"【{label}】共 {len(results)} 章\n")
+                f.write(f"主索引源: {catalog_url}\n")
+                f.write("=" * 60 + "\n\n")
+                for _, _, content, _ in results:
+                    f.write(content + "\n")
 
         print(f"🎉 规范化文本已成功落盘至: {output_file_path}")
         return output_file_path

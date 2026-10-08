@@ -1,164 +1,167 @@
-# 📚 NovelTracker 2.0
+# NovelTracker
 
-> **基于“主索引探针 + 多源降级回源（Fallback Routing）”的高可用分布式小说监控、聚合与通用提取系统**
+小说检索、下载、追更与本地文件维护工具。提供浏览器界面和命令行，支持 TXT、EPUB、JSON 导出，以及「阅读 3.0（Legado）」局域网书库接入。
 
-[![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests: 13 Passed](https://img.shields.io/badge/Tests-13%2F13%20Passed-brightgreen.svg)]()
-[![Architecture: Fallback-Routing](https://img.shields.io/badge/Architecture-Fallback--Routing-brightgreen.svg)]()
+[快速开始](#快速开始) · [日常使用](#日常使用) · [手机阅读](#手机阅读legado) · [常见问题](#常见问题) · [开发与测试](#开发与测试)
 
----
+## 能做什么
 
-## 🌟 核心特性与架构亮点
+| 操作 | 用途 |
+| --- | --- |
+| 搜索与提取 | 输入书名或小说页面网址，寻找目录并提取章节 |
+| 文件导出 | 导出 TXT、EPUB、JSON，可指定章节范围 |
+| 本地续更 | 读取已有 TXT/EPUB，补抓缺失或残缺章节，并获取新章节 |
+| 文件体检 | 检查断号、短章及疑似异常正文，可尝试联网修复 |
+| 追更书架 | 收藏书籍，定期检查更新并提醒 |
+| 手机接入 | 通过 OPDS 或 WebDAV 获取电脑书库中的文件，导入配套书源 |
+| 浏览器接力 | 配合油猴脚本，将浏览器中已打开页面的正文发送到本地 |
 
-1. 🔍 **无固定源全网智能聚合与站内私有直连池（DirectSiteSearchHub）**：
-   - 解决“**搜不到**”问题：并发直连各大高质量小说 CMS 站内搜索端点（51read, bige3, xbiquwx, 89wx, piaotian, shuhaige 等），绕过公网搜索引擎 `noindex` 与反爬限制。
-2. 🛡️ **浏览器接力与抗盾助手（Relay Assistant & Tampermonkey）**：
-   - 解决“**不让看**”问题：配套本地 `python cli.py relay` 接力服务与油猴脚本（`novel_relay.user.js`），在真实浏览器浏览受 Cloudflare 强人机盾、VIP 保护的页面时，一键秒级同步抓取正文。
-3. ⚡ **主索引探针 + 降级回源（Fallback Routing）**：
-   - 主节点仅承担低频元数据监控（`MasterProbe`），降低反爬风险；
-   - 遭遇 VIP 付费预览截断或访问限制时，自动触发 **`DataIncompleteError` 熔断机制**，自动转入多源并发回源探针。
-3. 🛡️ **真目录连续性与防噪校验（Anti-Noise Catalog Validation）**：
-   - 针对多书搜索聚合页进行章节序号连贯性与跨度检测，自动识别并过滤伪目录与非小说垃圾页，确保全本目录 100% 真实。
-4. 🧠 **基于文本密度的启发式正文提取（Zero-Config Extraction）**：
-   - 彻底废除脆弱的 XPath / CSS 硬编码选择器，全面采用 **`Trafilatura`** 文本密度算法与 DOM 语义树萃取正文。
-5. 🧹 **多阶段标准化清洗管道（Regex Cleaning Pipeline）**：
-   - 智能剥离站点声明、推广标签、求月票语及广告外链，自动按中文排版标准进行 4 空格首行缩进与段落双换行规整。
-6. 📚 **多格式原生打包导出（Multi-Format Exporters）**：
-   - **📄 TXT**：标准中文缩进纯文本。
-   - **📚 EPUB**：内嵌目录索引（NCX / Nav TOC）、章节导航与排版样式的标准 EPUB3 电子书（纯 Python 标准库打包，零外部重依赖）。
-   - **📊 JSON**：包含字数统计、章节列表与段落数组的结构化数据，方便 API 接入与二次开发。
-7. 🔧 **单章增量修复工具（In-Place GapFiller）**：
-   - 内置 `gap_filler.py` 增量修复脚本，针对受限或损坏章节开展 Top-10 深度多源回源，并实现**就地回填覆盖**。
-8. 🔔 **追更书架与多渠道通知（Notifier）**：
-   - 本地持久化书架管理，支持 Windows 桌面 Toast 弹窗及微信推送（PushPlus / Server酱）。
+提取结合站点规则和通用正文分析。网站访问限制、目录结构和正文质量会影响结果；任务会区分完成、部分完成与失败。
 
----
+## 快速开始
 
-## 🏗️ 架构拓扑图
+需要安装 Python 和 Git。安装配置声明 Python 3.8 及以上；本次修复在 Windows / Python 3.14 上验证，其他版本尚未逐一复测。
 
-```mermaid
-flowchart TD
-    A[用户输入: 书名 / 目录页 URL / 详情页 URL / 单章阅读页] --> B[URLClassifier 智能分类器]
-    
-    B -->|纯书名| C[find_authentic_catalog_candidates 真目录多源探测]
-    B -->|书籍详情页/目录页| D[HeuristicCatalogExtractor 动态分页目录树发现]
-    B -->|单章阅读页| E[ChainedChapterCrawler 链式前后向拓扑追溯]
-    
-    C --> D
-    D --> F[章节采集并发调度 Worker Pool]
-    E --> F
-    
-    F --> G[主节点内容抓取]
-    G --> H{正文完整性检测<br/>Char >= 350 & 无截断?}
-    
-    H -->|PASS 正常通过| J[Regex Cleaning Pipeline 多级清洗管道]
-    H -->|FAIL 触发 DATA_INCOMPLETE| I[FallbackRouter 降级回源引擎]
-    
-    I -->|Top-10 SERP + 域名白名单评分| I1[Trafilatura 启发式正文抽取]
-    I1 --> J
-    
-    J --> K{多格式导出引擎 Formatters}
-    K -->|TXT| L1[《书名》.txt 标准排版]
-    K -->|EPUB| L2[《书名》.epub 标准电子书]
-    K -->|JSON| L3[《书名》.json 结构化数据]
-```
+### Windows（PowerShell）
 
----
+在准备存放项目的目录打开 PowerShell，依次执行：
 
-## 🚀 安装与快速开始
-
-### 1. 克隆仓库与安装依赖
-```bash
-git clone https://github.com/YOUR_USERNAME/novel-tracker.git
+```powershell
+git clone https://github.com/Shengxuan2513/novel-tracker.git
 cd novel-tracker
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe cli.py web --port 5000
 ```
 
-### 2. 开发者安装（可选）
-```bash
-pip install -e .
-```
+以上命令直接使用虚拟环境中的 Python，无需激活环境。后续命令示例中的 `python`，在 Windows 下可替换为 `.\.venv\Scripts\python.exe`。
 
----
-
-## 💻 命令行使用手册 (CLI)
+### macOS / Linux
 
 ```bash
-# 1. 启动可视化 Web 图形控制台（浏览器操作界面）
+git clone https://github.com/Shengxuan2513/novel-tracker.git
+cd novel-tracker
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 python cli.py web --port 5000
-
-# 2. 全网即时查最新章节
-python cli.py search "宿命之环"
-
-# 3. 通用提取器：输入书名或任意网址，一键导出 EPUB 电子书与 TXT
-python cli.py extract "宿命之环" -f epub,txt -o "downloads"
-
-# 4. 提取任意小说详情页/目录页，导出全格式 (TXT + EPUB + JSON)
-python cli.py extract "https://m.51read.org/xiaoshuo/406687/" -f all
-
-# 5. 指定下载章节范围（例如只下载前 50 章尝鲜）
-python cli.py extract "没钱修什么仙" --start 1 --limit 50 -f epub
-
-# 6. 添加小说至追更书架
-python cli.py follow "宿命之环"
-
-# 7. 查看追更书架与已知章节
-python cli.py list
-
-# 8. 一键检查书架全量更新状态
-python cli.py check
-
-# 9. 开启后台持续追更监控（默认每 15 分钟检查并推送提醒）
-python cli.py monitor -i 15
-
-# 10. 启动浏览器接力服务（配合油猴脚本一键同步任何受盾保护小说）
-python cli.py relay --port 8765
-
-# 11. 增量修复与残缺章节单章就地回填
-python scripts/gap_filler.py "downloads/《没钱修什么仙》.txt"
 ```
 
----
+### 第一次使用
 
-## 🐍 Python 代码级调用 (SDK)
+1. 启动后打开浏览器中的 `http://127.0.0.1:5000`。
+2. 输入书名或目录页网址，选择导出格式，开始提取。
+3. 查看任务结果；如果有未完成章节，根据提示重试。
+4. 在「下载文件」中获取 TXT 或 EPUB。
 
-```python
-import asyncio
-from core.universal_engine import UniversalNovelExtractor
+运行期间保持终端窗口打开，按 `Ctrl+C` 停止服务。下次使用时进入项目目录，重新执行启动命令即可。
 
-async def main():
-    # 初始化提取引擎
-    extractor = UniversalNovelExtractor(output_dir="downloads", concurrency=16)
-    
-    # 支持书名或任意小说 URL
-    results = await extractor.extract(
-        input_target="宿命之环",
-        formats=["epub", "txt", "json"]
-    )
-    
-    print("导出成功:", results)
+## 日常使用
 
-if __name__ == "__main__":
-    asyncio.run(main())
-```
+优先使用浏览器界面。需要批量操作或维护已有文件时，可在项目目录运行以下命令。
 
----
+### 搜索、下载与范围提取
 
-## 🧪 自动化测试套件
-
-项目内置全量自动化单元测试与集成测试：
 ```bash
-python -m unittest discover tests
+python cli.py search "宿命之环"
+python cli.py extract "宿命之环" -f txt,epub
+python cli.py extract "宿命之环" --start 1 --limit 50 -f all
 ```
-- ✅ `test_universal.py`：测试 URL 智能分类与 TXT / EPUB / JSON 导出打包。
-- ✅ `test_pipeline.py`：测试 Trafilatura 抽取与去噪清洗管道。
-- ✅ `test_fallback.py`：测试降级路由域名权重评分与动态 Query 生成。
-- ✅ `test_parser.py`：测试中文大写数字与阿数字混合章节序号解析。
-- ✅ `test_tracker.py`：测试追更书架持久化与增量状态更新。
 
----
+`extract` 也接受小说详情页、目录页或章节页的网址。`-f all` 导出 TXT、EPUB 和 JSON；`--start` 是起始章节号，`--limit` 是最多提取的章节数。默认保存到数据目录下的 `downloads`，可用 `-o` 指定其他目录。
 
-## 📄 开源许可证
+### 已有文件续更与修复
 
-本项目基于 [MIT 许可证](LICENSE) 开源。仅供学习与个人阅读研究，请遵守相关法律法规与站点 Robots 协议。
+```bash
+python cli.py update-file "downloads/《书名》.txt"
+python cli.py audit "downloads/《书名》.epub"
+python cli.py audit "downloads/《书名》.epub" --fix
+```
+
+将示例路径换成实际文件路径。`audit` 只做检查，添加 `--fix` 后尝试修复；续更与修复可用 `-s "目录页网址"` 指定来源，自动搜索无法找到正确书籍时可以使用此选项。
+
+- 续更会重试本地已有范围内的缺章、残章，再获取新章节；部分完成会保留未修复内容并提示剩余问题。
+- TXT 和 EPUB 先生成并校验，再替换目标文件，旧版本保留为同路径的 `.bak`。正常写入异常会回退旧文件。
+- 范围提取使用含章节范围的独立文件名；含暂缺章节的提取结果带「未完整」，避免覆盖已有完整版本。
+- 无法确认身份或完整性的旧缓存会重新抓取。旧缓存目录不会被清空。
+
+不要在文件发布期间手工编辑同一文件。突然断电发生在 TXT 与 EPUB 的替换之间时，可能留下不同版本，可使用对应的 `.bak` 恢复。
+
+### 追更书架
+
+```bash
+python cli.py follow "宿命之环"
+python cli.py list
+python cli.py check
+python cli.py monitor -i 15
+python cli.py unfollow "宿命之环"
+```
+
+`monitor -i 15` 每 15 分钟检查一次，需保持进程运行。`check` / `monitor` 负责检查更新并提醒；更新本地 TXT/EPUB 请运行 `update-file`。
+
+## 手机阅读（Legado）
+
+电脑和手机连接同一局域网，在电脑启动：
+
+```bash
+python cli.py legado --port 5000
+```
+
+终端会显示实际局域网地址。在阅读 App 中使用相应入口填写链接：
+
+| 入口 | 链接示例 |
+| --- | --- |
+| OPDS 外部书库 | `http://电脑局域网IP:5000/opds` |
+| WebDAV 远程书籍 | `http://电脑局域网IP:5000/webdav` |
+| 书源管理 → 网络导入 | `http://电脑局域网IP:5000/api/legado/sources.json` |
+
+将「电脑局域网IP」换成终端显示的地址，不要在手机上填写 `127.0.0.1`。使用其他端口时，同时修改链接中的端口。手机访问期间保持电脑服务运行。
+
+服务器文件续更后，手机上已经下载的副本需重新获取。OPDS 下载使用版本地址和不可变文件快照，避免旧章节偏移读取新版 EPUB；旧地址返回更新提示，普通客户端需刷新书库后重新获取。
+
+[配套修复客户端](client/EPUB修复说明.md) 支持按服务器返回的最新地址恢复读取，安装与源码构建步骤见该文档。电脑放置配套 APK 后可通过 `/legado-fixed.apk` 下载；未放置时返回明确的缺失提示。OPDS/WebDAV 及客户端下载接口已做自动化验证，本次未进行手机实机测试或重新构建 Android APK。
+
+下载快照保存在 `downloads/.download-snapshots/`，会占用磁盘；需要清理时先停止服务，再删除该目录。版本协议与限制见 [版本下载说明](docs/versioned-downloads.md)。
+
+仅查看链接可用 `python cli.py legado --info`；停止或重启本项目的服务可用 `--stop` / `--restart`，并指定与运行时相同的 `--port`。
+
+## 文件保存在哪里
+
+| 运行方式 | 默认数据根目录 |
+| --- | --- |
+| 从源码运行（包括 `pip install -e .`） | 项目目录 |
+| 普通安装包，Windows | `%LOCALAPPDATA%\NovelTracker` |
+| 普通安装包，macOS / Linux | `$XDG_DATA_HOME/novel-tracker`，未设置时为 `~/.local/share/novel-tracker` |
+
+下载文件位于数据根目录的 `downloads` 中，书架和缓存也使用同一数据根目录；切换启动位置不会改变默认书库。可设置环境变量 `NOVEL_TRACKER_DATA_DIR` 指定数据根目录。
+
+普通安装包可从任意目录使用 `novel-tracker web` 等命令，将示例中的 `python cli.py` 替换为 `novel-tracker`。
+
+## 常见问题
+
+**启动提示端口被占用**：换一个端口，例如 `python cli.py web --port 5001`，浏览器访问 `http://127.0.0.1:5001`。停止服务只会处理能确认属于本项目的进程。
+
+**书名搜索没有结果或选错书**：尝试输入明确的目录页网址；维护已有文件时用 `-s` 指定来源，并核对书名与作者。
+
+**任务部分完成**：先查看失败章节，确认来源可访问后重试。文件体检中的短章提示需要结合正文判断，篇幅短不一定代表损坏。
+
+**手机无法连接**：核对电脑局域网 IP、服务端口、双方网络及防火墙是否允许连接。WebDAV 地址应填入 App 的 WebDAV 入口，不能用普通网页访问来判断是否可用。
+
+**需要浏览器接力**：运行 `python cli.py relay --port 8765`，配合 [油猴脚本](scripts/novel_relay.user.js) 使用。接力发送的是浏览器中已经打开的正文页面。
+
+更多参数可运行 `python cli.py --help`，或 `python cli.py extract --help` 等子命令帮助。
+
+## 开发与测试
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest tests -q
+```
+
+整合客户端接口、版本下载和六项稳定性修复后的回归测试共 **105 项**，覆盖章节完整性、缺章修复、多页拼接、文件发布回退、缓存身份、请求校验、版本下载、配套 APK 接口及阅读接口。测试使用受控数据，不能代表所有在线书源始终可用；测试结果与范围见 PR #7。
+
+代码入口为 [cli.py](cli.py)，主要实现位于 [core](core)，回归用例位于 [tests](tests)。
+
+## 许可证
+
+本项目使用 [MIT 许可证](LICENSE)。请遵守内容授权与来源站点的使用规则。

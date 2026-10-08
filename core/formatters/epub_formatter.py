@@ -12,8 +12,12 @@ from datetime import datetime
 from typing import List, Tuple, Dict
 
 
+from core.safe_publish import atomic_export
+
+
 class EpubFormatter:
     @staticmethod
+    @atomic_export
     def export(
         output_path: str,
         book_meta: Dict[str, str],

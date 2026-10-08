@@ -9,6 +9,7 @@ import json
 import os
 import urllib.parse
 from datetime import datetime
+from typing import Optional
 from aiohttp import web
 
 from core.tracker import NovelTracker
@@ -585,6 +586,27 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             if (tabId === 'tab-legado') loadLegadoInfo();
         }
 
+        function escapeHtml(value) {
+            const element = document.createElement('span');
+            element.textContent = String(value ?? '');
+            return element.innerHTML.replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+        }
+
+        async function postJSON(url, data) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data ?? {})
+            });
+            const text = await response.text();
+            let result;
+            try { result = JSON.parse(text); } catch { result = {}; }
+            if (!response.ok || result.status === 'error') {
+                throw new Error(result.message || text || '请求失败，请重试。');
+            }
+            return result;
+        }
+
         // Start Universal Extraction
         async function startExtract() {
             const target = document.getElementById('extract-target').value.trim();
@@ -598,9 +620,13 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             if (document.getElementById('fmt-txt').checked) formats.push('txt');
             if (document.getElementById('fmt-json').checked) formats.push('json');
 
-            const start = parseInt(document.getElementById('extract-start').value) || 1;
+            const start = Number(document.getElementById('extract-start').value);
             const limitVal = document.getElementById('extract-limit').value.trim();
-            const limit = limitVal ? parseInt(limitVal) : null;
+            const limit = limitVal ? Number(limitVal) : null;
+            if (!formats.length) return showToast('请至少选择一种导出格式。');
+            if (!Number.isInteger(start) || start < 1 || (limit !== null && (!Number.isInteger(limit) || limit < 1))) {
+                return showToast('起始章节和章节数量必须是正整数。');
+            }
 
             const logBox = document.getElementById('log-box');
             logBox.innerText = '正在建立实时连接...\n';
@@ -620,6 +646,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                     })
                 });
 
+                if (!response.ok) throw new Error(await response.text());
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder('utf-8');
 
@@ -634,6 +661,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                 logBox.innerText += `\n❌ 请求发生异常: ${err}\n`;
             } finally {
                 btn.disabled = false;
+                loadFiles();
             }
         }
 
@@ -650,75 +678,73 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                     return;
                 }
                 container.innerHTML = data.books.map(b => {
-                    let gapBadge = '';
+                    let gapBadge = '<span class="badge">尚未核实更新进度</span>';
                     if (b.gap_chapters === 0) {
                         gapBadge = '<span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);"><i class="fa fa-check-circle"></i> 已与官方同步</span>';
                     } else if (b.gap_chapters > 0) {
-                        gapBadge = `<span class="badge" style="background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4);"><i class="fa fa-clock-o"></i> 开放源落后 ${b.gap_chapters} 章 (VIP连载中)</span>`;
+                        gapBadge = `<span class="badge" style="background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4);"><i class="fa fa-clock-o"></i> 开放源落后 ${escapeHtml(b.gap_chapters)} 章 (VIP连载中)</span>`;
                     }
                     return `
                         <div class="book-card">
                             <div class="book-header">
-                                <div class="book-name">《${b.name}》 <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">作者: ${b.author || '未知'}</span></div>
-                                <button class="btn btn-danger" style="padding: 3px 8px; font-size: 11px;" onclick="removeFollow('${b.name}')">移除</button>
+                                <div class="book-name">《${escapeHtml(b.name)}》 <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">作者: ${escapeHtml(b.author || '未知')}</span></div>
+                                <button class="btn btn-danger" style="padding: 3px 8px; font-size: 11px;" data-action="remove" data-book="${escapeHtml(b.name)}">移除</button>
                             </div>
                             <div class="book-meta">
                                 <div style="margin-bottom: 6px; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 8px;">
                                     <div style="font-size: 11px; color: #fbbf24; margin-bottom: 2px;"><i class="fa fa-star"></i> <strong>官方正版最新:</strong></div>
-                                    <div style="font-size: 13px; color: #fef08a; font-weight: 600;">${b.official_chapter || '同步中...'}</div>
-                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${b.official_source || '官方平台'}</div>
+                                    <div style="font-size: 13px; color: #fef08a; font-weight: 600;">${escapeHtml(b.official_chapter || '同步中...')}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${escapeHtml(b.official_source || '官方平台')}</div>
                                 </div>
                                 <div style="margin-bottom: 6px; background: rgba(0,0,0,0.25); padding: 8px 10px; border-radius: 8px;">
                                     <div style="font-size: 11px; color: #60a5fa; margin-bottom: 2px;"><i class="fa fa-download"></i> <strong>开放书源可下载:</strong></div>
-                                    <div style="font-size: 13px; color: #93c5fd; font-weight: 600;">${b.crawlable_chapter || b.last_known_chapter_title || '暂无数据'}</div>
-                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${b.crawlable_source || b.source_name || '全网聚合'}</div>
+                                    <div style="font-size: 13px; color: #93c5fd; font-weight: 600;">${escapeHtml(b.crawlable_chapter || b.last_known_chapter_title || '暂无数据')}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">来源: ${escapeHtml(b.crawlable_source || b.source_name || '全网聚合')}</div>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
                                     <div>${gapBadge}</div>
-                                    <div style="font-size: 11px; color: var(--text-muted);">${b.last_checked || '尚未检查'}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(b.last_checked || '尚未检查')}</div>
                                 </div>
                             </div>
                             <div class="book-actions" style="margin-top: 10px; display: flex; gap: 8px;">
-                                <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; flex: 1;" onclick="extractDirectly('${b.name}')"><i class="fa fa-download"></i> 导出全本</button>
-                                <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;" onclick="switchTab('tab-relay')"><i class="fa fa-shield"></i> 抗盾接力</button>
+                                <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px; flex: 1;" data-action="extract" data-book="${escapeHtml(b.name)}"><i class="fa fa-download"></i> 导出全本</button>
+                                <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;" data-action="relay"><i class="fa fa-shield"></i> 抗盾接力</button>
                             </div>
                         </div>
                     `;
                 }).join('');
             } catch (err) {
-                container.innerHTML = `<div style="color: var(--danger); font-size: 13px;">加载失败: ${err}</div>`;
+                container.innerHTML = `<div style="color: var(--danger); font-size: 13px;">加载失败: ${escapeHtml(err)}</div>`;
             }
         }
 
         async function addFollowBook() {
             const name = document.getElementById('follow-name').value.trim();
             if (!name) return showToast('请输入小说名称！');
-            await fetch('/api/bookshelf/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name })
-            });
-            document.getElementById('follow-name').value = '';
-            showToast(`已添加《${name}》到书架！`);
-            loadBookshelf();
+            try {
+                await postJSON('/api/bookshelf/add', { name });
+                document.getElementById('follow-name').value = '';
+                showToast('已添加到书架。');
+                await loadBookshelf();
+            } catch (error) { showToast(error.message); }
         }
 
         async function removeFollow(name) {
-            if (!confirm(`确认将《${name}》从书架移除吗？`)) return;
-            await fetch('/api/bookshelf/remove', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name })
-            });
-            showToast(`已移除《${name}》`);
-            loadBookshelf();
+            if (!confirm('确认从书架移除《' + name + '》吗？')) return;
+            try {
+                await postJSON('/api/bookshelf/remove', { name });
+                showToast('已移除。');
+                await loadBookshelf();
+            } catch (error) { showToast(error.message); }
         }
 
         async function checkAllUpdates() {
-            showToast('正在全网多源检查书架更新...');
-            await fetch('/api/bookshelf/check', { method: 'POST' });
-            showToast('检查完成！');
-            loadBookshelf();
+            showToast('正在检查书架更新...');
+            try {
+                await postJSON('/api/bookshelf/check', {});
+                showToast('检查完成。');
+                await loadBookshelf();
+            } catch (error) { showToast(error.message); }
         }
 
         function extractDirectly(name) {
@@ -733,6 +759,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
             tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">正在扫描 downloads 目录...</td></tr>';
             try {
                 const res = await fetch('/api/files');
+                if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
                 if (!data.files || data.files.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">暂无下载文件</td></tr>';
@@ -744,10 +771,10 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                     if (f.ext === 'json') badgeClass = 'badge-json';
                     return `
                         <tr>
-                            <td><strong>${f.name}</strong></td>
-                            <td><span class="badge ${badgeClass}">${f.ext.toUpperCase()}</span></td>
-                            <td>${f.size_formatted}</td>
-                            <td style="color: var(--text-muted);">${f.modified}</td>
+                            <td><strong>${escapeHtml(f.name)}</strong></td>
+                            <td><span class="badge ${badgeClass}">${escapeHtml(f.ext.toUpperCase())}</span></td>
+                            <td>${escapeHtml(f.size_formatted)}</td>
+                            <td style="color: var(--text-muted);">${escapeHtml(f.modified)}</td>
                             <td>
                                 <a href="/api/download/${encodeURIComponent(f.name)}" class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" download><i class="fa fa-download"></i> 下载</a>
                             </td>
@@ -755,7 +782,7 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                     `;
                 }).join('');
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger);">加载失败: ${err}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger);">加载失败: ${escapeHtml(err)}</td></tr>`;
             }
         }
 
@@ -780,18 +807,23 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
                 navigator.clipboard.writeText(el.value).then(() => {
                     showToast('已成功复制链接到剪贴板！');
                 }).catch(() => {
-                    document.execCommand('copy');
-                    showToast('已成功复制链接到剪贴板！');
+                    showToast(document.execCommand('copy') ? '已复制链接。' : '复制失败，请长按选择链接后复制。');
                 });
             } else {
-                document.execCommand('copy');
-                showToast('已成功复制链接到剪贴板！');
+                showToast(document.execCommand('copy') ? '已复制链接。' : '复制失败，请长按选择链接后复制。');
             }
         }
 
         // Initial preload
         window.addEventListener('DOMContentLoaded', () => {
             loadLegadoInfo();
+            document.getElementById('bookshelf-list').addEventListener('click', event => {
+                const button = event.target.closest('button[data-action]');
+                if (!button) return;
+                if (button.dataset.action === 'remove') removeFollow(button.dataset.book);
+                if (button.dataset.action === 'extract') extractDirectly(button.dataset.book);
+                if (button.dataset.action === 'relay') switchTab('tab-relay');
+            });
         });
     </script>
 </body>
@@ -800,10 +832,11 @@ HTML_DASHBOARD = r"""<!DOCTYPE html>
 
 
 class WebApp:
-    def __init__(self, host: str = "127.0.0.1", port: int = 5000, output_dir: str = "downloads"):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5000, output_dir: Optional[str] = None):
         self.host = host
         self.port = port
-        self.output_dir = output_dir
+        from core.paths import downloads_dir
+        self.output_dir = output_dir or downloads_dir()
         self.tracker = NovelTracker()
         self.sources_manager = SourceManager()
         self.source_cache = SourceCache()
@@ -830,14 +863,14 @@ class WebApp:
                 "crawlable_source": b.get("crawlable_source", b.get("source_name", "全网聚合")),
                 "last_known_chapter_title": b.get("last_known_chapter", "暂无数据"),
                 "source_name": b.get("source_name", "全网聚合"),
-                "gap_chapters": b.get("gap_chapters", 0),
+                "gap_chapters": b.get("gap_chapters", 0) if b.get("official_chapter") and b.get("crawlable_chapter") else None,
                 "last_checked": b.get("last_checked_at", "尚未检查")
             })
         return web.json_response({"books": formatted_books})
 
     async def handle_add_bookshelf(self, request: web.Request) -> web.Response:
-        data = await request.json()
-        name = data.get("name", "").strip()
+        data = await self._json_object(request)
+        name = self._book_name(data)
         if name:
             # 1. Concurrent official probe
             off_task = asyncio.create_task(self.official_prober.probe(name))
@@ -876,6 +909,8 @@ class WebApp:
 
             # Wait for official probe
             off_info = await off_task
+            if not c_chap and not off_info.get("official_chapter"):
+                return web.json_response({"status": "error", "message": "未找到该书的章节信息，请核对书名后重试。"}, status=422)
             self.tracker.add_book(
                 book_name=name,
                 author=author,
@@ -896,8 +931,8 @@ class WebApp:
         return web.json_response({"status": "success"})
 
     async def handle_remove_bookshelf(self, request: web.Request) -> web.Response:
-        data = await request.json()
-        name = data.get("name", "").strip()
+        data = await self._json_object(request)
+        name = self._book_name(data)
         if name:
             self.tracker.remove_book(name)
         return web.json_response({"status": "success"})
@@ -963,7 +998,8 @@ class WebApp:
                     book_name=name,
                     new_chapter=c_chap,
                     old_chapter=old_title,
-                    source_url=c_url
+                    chapter_url=c_url,
+                    source_name=c_src
                 )
         return web.json_response({"status": "success"})
 
@@ -972,7 +1008,7 @@ class WebApp:
         if os.path.exists(self.output_dir):
             for fname in os.listdir(self.output_dir):
                 fpath = os.path.join(self.output_dir, fname)
-                if os.path.isfile(fpath):
+                if os.path.isfile(fpath) and fname.lower().endswith((".txt", ".epub", ".json")):
                     size_bytes = os.path.getsize(fpath)
                     if size_bytes >= 1024 * 1024:
                         size_str = f"{size_bytes / (1024 * 1024):.2f} MB"
@@ -993,18 +1029,20 @@ class WebApp:
     async def handle_download_file(self, request: web.Request) -> web.Response:
         from core.versioned_download import file_version, snapshot_file, StaleDownload
 
-        # aiohttp has already decoded this path parameter. Do not decode twice.
+        # aiohttp has decoded the parameter once; literal percent names stay literal.
         filename = request.match_info["filename"]
         if filename in (".", "..") or any(char in filename for char in ("/", "\\", "\x00")):
             return web.Response(status=404, text="File Not Found")
-        filepath = os.path.realpath(os.path.join(self.output_dir, filename))
         root = os.path.realpath(self.output_dir)
-        if os.path.commonpath([root, filepath]) != root:
+        filepath = os.path.realpath(os.path.join(root, filename))
+        try:
+            inside = os.path.commonpath([root, filepath]) == root
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(filepath) or not filename.lower().endswith((".txt", ".epub", ".json")):
             return web.Response(status=404, text="File Not Found")
         version = request.match_info.get("version")
         if version is None:
-            if not os.path.isfile(filepath):
-                return web.Response(status=404, text="File Not Found")
             return web.FileResponse(filepath, chunk_size=512 * 1024)
         try:
             snapshot = await asyncio.to_thread(snapshot_file, filepath, version)
@@ -1021,12 +1059,37 @@ class WebApp:
             })
         return web.FileResponse(snapshot, chunk_size=512 * 1024, headers={"Cache-Control": "no-cache"})
 
+    @staticmethod
+    async def _json_object(request):
+        try:
+            value = await request.json()
+        except (ValueError, UnicodeError):
+            raise web.HTTPBadRequest(text="请求内容不是有效 JSON。")
+        if not isinstance(value, dict):
+            raise web.HTTPBadRequest(text="请求内容必须是对象。")
+        return value
+
+    @staticmethod
+    def _book_name(data):
+        value = data.get("name")
+        if not isinstance(value, str) or not value.strip() or len(value) > 200:
+            raise web.HTTPBadRequest(text="请输入有效书名（最多 200 个字符）。")
+        return value.strip()
+
     async def handle_extract_stream(self, request: web.Request) -> web.StreamResponse:
-        data = await request.json()
-        target = data.get("target", "").strip()
+        data = await self._json_object(request)
+        target = data.get("target", "")
         formats = data.get("formats", ["epub", "txt"])
         start = data.get("start", 1)
         limit = data.get("limit")
+        if not isinstance(target, str) or not target.strip() or len(target) > 2048:
+            raise web.HTTPBadRequest(text="请输入书名或有效小说网址。")
+        if not isinstance(formats, list) or not formats or any(fmt not in ("txt", "epub", "json") for fmt in formats):
+            raise web.HTTPBadRequest(text="请至少选择一种有效导出格式。")
+        if type(start) is not int or start < 1 or (limit is not None and (type(limit) is not int or limit < 1)):
+            raise web.HTTPBadRequest(text="起始章节和章节数量必须是正整数。")
+        target = target.strip()
+        formats = list(dict.fromkeys(formats))
 
         resp = web.StreamResponse(
             status=200,
@@ -1038,8 +1101,14 @@ class WebApp:
         )
         await resp.prepare(request)
 
+        connected = True
         async def stream_print(msg: str):
-            await resp.write(f"{msg}\n".encode("utf-8"))
+            nonlocal connected
+            if connected:
+                try:
+                    await resp.write(f"{msg}\n".encode("utf-8"))
+                except (ConnectionResetError, RuntimeError):
+                    connected = False
 
         await stream_print(f"=================================================================")
         await stream_print(f"🌐 【UniversalNovelExtractor 通用小说提取器】启动")
@@ -1057,19 +1126,28 @@ class WebApp:
                 custom_output_dir=self.output_dir,
                 log_callback=stream_print
             )
-            await stream_print("\n🎉 全流程提取完成！")
+            if not results:
+                await stream_print("\n❌ 提取失败：未生成有效文件，请核对书名或尝试目录页网址。")
+            elif any("（未完整）" in os.path.basename(path) for path in results.values()):
+                await stream_print("\n⚠️ 部分完成：仍有暂缺章节，可再次提取重试。")
+            else:
+                await stream_print("\n✅ 提取完成，文件已保存。")
             for fmt, path in results.items():
                 await stream_print(f"  ✓ [{fmt.upper()} 导出路径] -> {path}")
         except Exception as e:
             await stream_print(f"\n❌ 提取失败: {e}")
 
-        await resp.write_eof()
+        if connected:
+            try:
+                await resp.write_eof()
+            except ConnectionResetError:
+                pass
         return resp
 
     async def handle_opds(self, request: web.Request) -> web.Response:
         from core.legado_bridge import LegadoBridge, get_local_ip
         bridge = LegadoBridge(downloads_dir=self.output_dir)
-        host_url = f"http://{get_local_ip()}:{self.port}"
+        host_url = f"{request.scheme}://{request.host}"
         feed_xml = bridge.generate_opds_feed(host_url)
         return web.Response(text=feed_xml, content_type="application/atom+xml", charset="utf-8")
 
@@ -1092,15 +1170,22 @@ class WebApp:
 
     async def handle_legado_info(self, request: web.Request) -> web.Response:
         from core.legado_bridge import get_local_ip
-        lan_ip = get_local_ip()
+        requested_host = urllib.parse.urlsplit("//" + request.host).hostname
+        if requested_host in ("localhost", "127.0.0.1", "::1"):
+            lan_ip = get_local_ip()
+            host_url = f"http://{lan_ip}:{self.port}"
+        else:
+            lan_ip = requested_host
+            host_url = f"{request.scheme}://{request.host}"
         base_dir = os.path.dirname(os.path.dirname(__file__))
         apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
         return web.json_response({
+            "service": "novel-tracker",
             "lan_ip": lan_ip,
             "port": self.port,
-            "opds_url": f"http://{lan_ip}:{self.port}/opds",
-            "sources_url": f"http://{lan_ip}:{self.port}/api/legado/sources.json",
-            "apk_url": f"http://{lan_ip}:{self.port}/legado.apk",
+            "opds_url": f"{host_url}/opds",
+            "sources_url": f"{host_url}/api/legado/sources.json",
+            "apk_url": f"{host_url}/legado.apk",
             "apk_exists": os.path.exists(apk_path)
         })
 
@@ -1199,30 +1284,36 @@ class WebApp:
         app.router.add_get("/webdav", self.handle_webdav)
         app.router.add_get("/downloads/{filename}", self.handle_download_file)
 
-        local_url = f"http://127.0.0.1:{self.port}"
-        from core.legado_bridge import get_local_ip
-        lan_ip = get_local_ip()
+        def listening(message):
+            local_url = f"http://127.0.0.1:{self.port}"
+            from core.legado_bridge import get_local_ip
+            lan_ip = get_local_ip()
 
-        print("=" * 65)
-        print("[+] NovelTracker 2.0 Web Dashboard started")
-        print(f"[*] Local access: {local_url}")
-        print(f"[*] Storage path: {os.path.abspath(self.output_dir)}")
-        print("-" * 65)
-        print("[+] Legado (阅读 3.0) Mobile Integration:")
-        print(f"  [-] OPDS Catalog Feed : http://{lan_ip}:{self.port}/opds")
-        print(f"  [-] BookSource Sync   : http://{lan_ip}:{self.port}/api/legado/sources.json")
-        print(f"  [-] Legado arm64 APK  : http://{lan_ip}:{self.port}/legado.apk")
-        print("Press Ctrl+C to stop.")
-        print("=" * 65 + "\n")
+            print("=" * 65)
+            print("[+] NovelTracker 2.0 Web Dashboard started")
+            print(f"[*] Local access: {local_url}")
+            print(f"[*] Storage path: {os.path.abspath(self.output_dir)}")
+            print("-" * 65)
+            print("[+] Legado (阅读 3.0) Mobile Integration:")
+            print(f"  [-] OPDS Catalog Feed : http://{lan_ip}:{self.port}/opds")
+            print(f"  [-] BookSource Sync   : http://{lan_ip}:{self.port}/api/legado/sources.json")
+            print(f"  [-] Legado arm64 APK  : http://{lan_ip}:{self.port}/legado.apk")
+            print("Press Ctrl+C to stop.")
+            print("=" * 65 + "\n")
 
-        if auto_open:
-            import webbrowser
-            try:
-                webbrowser.open(local_url)
-            except Exception:
-                pass
+            if auto_open:
+                import webbrowser
+                try:
+                    webbrowser.open(local_url)
+                except Exception:
+                    pass
 
-        web.run_app(app, host=self.host, port=self.port)
+        try:
+            web.run_app(app, host=self.host, port=self.port, print=listening)
+        except OSError as error:
+            print(f"❌ 无法监听 {self.host}:{self.port}，请检查端口是否被占用或更换端口。详情：{error}")
+            raise SystemExit(1)
+
 
 
 if __name__ == "__main__":

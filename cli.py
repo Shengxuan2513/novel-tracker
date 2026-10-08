@@ -22,6 +22,8 @@ from core.tracker import NovelTracker
 from core.notifier import Notifier
 from core.downloader import NovelDownloader
 from core.universal_engine import UniversalNovelExtractor
+from core.paths import downloads_dir
+from core.service_process import find_pid_by_port, stop_service
 
 
 def print_banner():
@@ -174,6 +176,12 @@ async def cmd_check():
 
 async def cmd_download(novel_name: str, url: Optional[str], start: int, limit: Optional[int], output: str, concurrency: int):
     """Download novel chapters."""
+    if not url:
+        results = await UniversalNovelExtractor(output_dir=output, concurrency=concurrency).extract(
+            novel_name, formats=["txt"], start_chapter=start, limit_chapters=limit)
+        if not results:
+            raise SystemExit(2)
+        return
     downloader = NovelDownloader(output_dir=output, concurrency=concurrency)
     await downloader.download_novel(
         novel_name=novel_name,
@@ -187,20 +195,23 @@ async def cmd_extract(target: str, formats: str, start: int, limit: Optional[int
     """Extract novel from arbitrary URL or book title into TXT/EPUB/JSON."""
     format_list = [f.strip().lower() for f in formats.split(",") if f.strip()]
     extractor = UniversalNovelExtractor(output_dir=output, concurrency=concurrency)
-    await extractor.extract(
+    results = await extractor.extract(
         input_target=target,
         formats=format_list,
         start_chapter=start,
         limit_chapters=limit,
         custom_output_dir=output
     )
+    if not results or any("（未完整）" in os.path.basename(path) for path in results.values()):
+        raise SystemExit(2)
 
 
 async def cmd_update_file(file_path: str, source: Optional[str], concurrency: int):
     """Incrementally update a local novel file."""
     from core.incremental_updater import IncrementalNovelUpdater
     updater = IncrementalNovelUpdater(concurrency=concurrency)
-    await updater.update_book(file_path, custom_source_url=source)
+    if not await updater.update_book(file_path, custom_source_url=source):
+        raise SystemExit(2)
 
 
 async def cmd_audit(file_path: str, fix: bool, source: Optional[str], threshold: int):
@@ -208,7 +219,9 @@ async def cmd_audit(file_path: str, fix: bool, source: Optional[str], threshold:
     from core.book_health_auditor import NovelHealthAuditor
     auditor = NovelHealthAuditor(min_char_threshold=threshold)
     if fix:
-        await auditor.repair_file(file_path, source_url=source)
+        report = await auditor.repair_file(file_path, source_url=source)
+        if report["remaining"]:
+            raise SystemExit(2)
     else:
         defects, bname, author, _ = auditor.audit_file(file_path)
         print(f"📖 书名: 《{bname}》 (作者: {author})")
@@ -240,49 +253,20 @@ async def cmd_monitor(interval_minutes: int):
             await asyncio.sleep(60)
 
 
-def find_pid_by_port(port: int) -> Optional[int]:
-    """Find listening process PID on given TCP port."""
-    try:
-        import psutil
-        for conn in psutil.net_connections(kind='inet'):
-            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
-                return conn.pid
-    except Exception:
-        pass
-    return None
-
-
 def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only: bool = False, stop: bool = False, restart: bool = False):
     """Display Legado integration guide and optionally export book sources or manage server."""
     import json
     import urllib.request
     from core.legado_bridge import LegadoBridge, get_local_ip
 
-    if stop:
-        pid = find_pid_by_port(port)
-        if pid:
-            try:
-                import psutil
-                p = psutil.Process(pid)
-                p.terminate()
-                print(f"[+] 已成功终止后台服务进程 (PID: {pid}, 端口: {port})")
-            except Exception as e:
-                print(f"[-] 终止进程失败: {e}")
-        else:
-            print(f"[*] 端口 {port} 上未检测到运行中的服务进程。")
-        return
-
-    if restart:
-        pid = find_pid_by_port(port)
-        if pid:
-            try:
-                import psutil
-                p = psutil.Process(pid)
-                p.terminate()
-                p.wait(timeout=3)
-                print(f"[+] 已终止旧服务进程 (PID: {pid})")
-            except Exception:
-                pass
+    if stop or restart:
+        try:
+            stop_service(port)
+        except RuntimeError as error:
+            print(f"❌ {error}")
+            raise SystemExit(1)
+        if stop:
+            return
 
     lan_ip = get_local_ip()
     bridge = LegadoBridge()
@@ -333,7 +317,7 @@ def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only
         req = urllib.request.Request(f"http://127.0.0.1:{port}/api/legado/info")
         with urllib.request.urlopen(req, timeout=0.8) as resp:
             if resp.status == 200:
-                is_running = True
+                is_running = json.load(resp).get("service") == "novel-tracker"
     except Exception:
         pass
 
@@ -345,11 +329,31 @@ def cmd_legado(export_sources: Optional[str] = None, port: int = 5000, info_only
         print("提示: 若需在前台实时查看连接日志，可执行: python cli.py legado --restart")
         print("      若需停止后台常驻服务，可执行    : python cli.py legado --stop\n")
     else:
+        if find_pid_by_port(port) is not None:
+            print(f"❌ 端口 {port} 已被占用，请使用 --port 更换端口。")
+            raise SystemExit(1)
         print(f"\n[*] 正在启动 Web 服务 (0.0.0.0:{port}) 并保持前台监听...")
         print(">>> 手机请打开浏览器或阅读 App 访问上述地址。按 Ctrl+C 可停止服务。<<<\n")
         from core.web_server import WebApp
         app = WebApp(host="0.0.0.0", port=port)
         app.start(auto_open=False)
+
+
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("请输入正整数。")
+    if number < 1:
+        raise argparse.ArgumentTypeError("数值必须大于零。")
+    return number
+
+
+def port_number(value):
+    number = positive_int(value)
+    if number > 65535:
+        raise argparse.ArgumentTypeError("端口必须在 1 到 65535 之间。")
+    return number
 
 
 def main():
@@ -381,52 +385,52 @@ def main():
     p_download = subparsers.add_parser("download", help="下载小说章节到本地 TXT 文件")
     p_download.add_argument("name", type=str, help="小说名称")
     p_download.add_argument("-u", "--url", type=str, default=None, help="指定的目录/书籍页面 URL（可选）")
-    p_download.add_argument("--start", type=int, default=1, help="起始章节序号，默认 1")
-    p_download.add_argument("--limit", type=int, default=None, help="最多下载章节数（可选）")
-    p_download.add_argument("-o", "--output", type=str, default="downloads", help="输出文件夹，默认 downloads")
-    p_download.add_argument("-c", "--concurrency", type=int, default=8, help="并发下载数，默认 8")
+    p_download.add_argument("--start", type=positive_int, default=1, help="起始章节序号，默认 1")
+    p_download.add_argument("--limit", type=positive_int, default=None, help="最多下载章节数（可选）")
+    p_download.add_argument("-o", "--output", type=str, default=downloads_dir(), help="输出文件夹，默认固定数据目录下的 downloads")
+    p_download.add_argument("-c", "--concurrency", type=positive_int, default=8, help="并发下载数，默认 8")
 
     # extract (Universal Extractor)
     p_extract = subparsers.add_parser("extract", help="通用小说提取器：输入任意小说 URL（详情/目录/单章）或书名，一键导出 TXT/EPUB/JSON")
     p_extract.add_argument("target", type=str, help="任意小说相关 URL（详情页/目录页/单章阅读页）或小说名称")
     p_extract.add_argument("-f", "--format", type=str, default="txt,epub", help="导出格式，逗号分隔，如 txt,epub,json 或 all，默认 txt,epub")
-    p_extract.add_argument("--start", type=int, default=1, help="起始章节序号，默认 1")
-    p_extract.add_argument("--limit", type=int, default=None, help="最多提取章节数（可选）")
-    p_extract.add_argument("-o", "--output", type=str, default="downloads", help="输出文件夹，默认 downloads")
-    p_extract.add_argument("-c", "--concurrency", type=int, default=12, help="并发下载数，默认 12")
+    p_extract.add_argument("--start", type=positive_int, default=1, help="起始章节序号，默认 1")
+    p_extract.add_argument("--limit", type=positive_int, default=None, help="最多提取章节数（可选）")
+    p_extract.add_argument("-o", "--output", type=str, default=downloads_dir(), help="输出文件夹，默认使用固定数据目录下的 downloads")
+    p_extract.add_argument("-c", "--concurrency", type=positive_int, default=12, help="并发下载数，默认 12")
 
     # update-file (Incremental File Updater)
     p_update = subparsers.add_parser("update-file", aliases=["update"], help="本地小说文件智能增量续更：分析本地已有章节，仅抓取新章节追加并编译 EPUB")
     p_update.add_argument("file", type=str, help="本地小说文件路径（.txt 或 .epub）")
     p_update.add_argument("-s", "--source", type=str, default=None, help="指定的书源目录 URL（可选）")
-    p_update.add_argument("-c", "--concurrency", type=int, default=15, help="并发抓取数，默认 15")
+    p_update.add_argument("-c", "--concurrency", type=positive_int, default=15, help="并发抓取数，默认 15")
 
     # audit (Book Health Auditor)
     p_audit = subparsers.add_parser("audit", aliases=["check-file"], help="本地小说文件健康体检与自愈：扫描空章、断号、词典污染与 VIP 卡片并可一键自动修复")
     p_audit.add_argument("file", type=str, help="本地小说文件路径（.txt 或 .epub）")
     p_audit.add_argument("--fix", action="store_true", help="自动联网抓取优质镜像进行原地自愈修复")
     p_audit.add_argument("-s", "--source", type=str, default=None, help="指定的书源目录 URL（可选）")
-    p_audit.add_argument("-t", "--threshold", type=int, default=350, help="章节字数过短下限阈值，默认 350")
+    p_audit.add_argument("-t", "--threshold", type=positive_int, default=350, help="章节字数过短下限阈值，默认 350")
 
     # relay (Browser Relay Server)
     p_relay = subparsers.add_parser("relay", help="启动本地浏览器接力服务，配合油猴脚本一键同步任何受盾保护小说")
-    p_relay.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
-    p_relay.add_argument("-o", "--output", type=str, default="downloads", help="输出文件夹，默认 downloads")
+    p_relay.add_argument("--port", type=port_number, default=8765, help="监听端口，默认 8765")
+    p_relay.add_argument("-o", "--output", type=str, default=downloads_dir(), help="输出文件夹，默认固定数据目录下的 downloads")
 
     # web (Web Dashboard GUI)
     p_web = subparsers.add_parser("web", help="启动可视化 Web 控制台界面（一键提取、书架管理与文件下载）")
     p_web.add_argument("--host", type=str, default="0.0.0.0", help="Web 监听主机地址，默认 0.0.0.0 (支持局域网移动设备访问)")
-    p_web.add_argument("--port", type=int, default=5000, help="Web 监听端口，默认 5000")
+    p_web.add_argument("--port", type=port_number, default=5000, help="Web 监听端口，默认 5000")
     p_web.add_argument("--no-open", action="store_true", help="不自动打开默认浏览器")
 
     # monitor
     p_monitor = subparsers.add_parser("monitor", help="启动持续监控模式")
-    p_monitor.add_argument("-i", "--interval", type=int, default=15, help="检查间隔（分钟），默认 15 分钟")
+    p_monitor.add_argument("-i", "--interval", type=positive_int, default=15, help="检查间隔（分钟），默认 15 分钟")
 
     # legado (Legado 3.0 Integration)
     p_legado = subparsers.add_parser("legado", aliases=["reader"], help="阅读 3.0 (Legado) 深度联动：展示 OPDS 无线书库、网络书源与 APK 下载地址")
     p_legado.add_argument("-s", "--export-sources", nargs="?", const="legado_sources.json", default=None, help="导出 Legado 3.0 兼容书源 JSON 文件")
-    p_legado.add_argument("--port", type=int, default=5000, help="Web 服务端口，默认 5000")
+    p_legado.add_argument("--port", type=port_number, default=5000, help="Web 服务端口，默认 5000")
     p_legado.add_argument("--info", action="store_true", help="仅显示链接信息，不自动驻留启动 Web 服务")
     p_legado.add_argument("--stop", action="store_true", help="停止当前运行中的后台服务进程")
     p_legado.add_argument("--restart", action="store_true", help="重启服务并在前台窗口保持运行与输出日志")
@@ -438,36 +442,41 @@ def main():
         parser.print_help()
         return
 
-    if args.command == "search":
-        asyncio.run(cmd_search(args.name))
-    elif args.command == "follow":
-        asyncio.run(cmd_follow(args.name))
-    elif args.command == "unfollow":
-        cmd_unfollow(args.name)
-    elif args.command == "list":
-        cmd_list()
-    elif args.command == "check":
-        asyncio.run(cmd_check())
-    elif args.command == "download":
-        asyncio.run(cmd_download(args.name, args.url, args.start, args.limit, args.output, args.concurrency))
-    elif args.command == "extract":
-        asyncio.run(cmd_extract(args.target, args.format, args.start, args.limit, args.output, args.concurrency))
-    elif args.command in ("update-file", "update"):
-        asyncio.run(cmd_update_file(args.file, args.source, args.concurrency))
-    elif args.command in ("audit", "check-file"):
-        asyncio.run(cmd_audit(args.file, args.fix, args.source, args.threshold))
-    elif args.command == "relay":
-        from core.relay_server import RelayServer
-        server = RelayServer(port=args.port, output_dir=args.output)
-        server.start()
-    elif args.command == "web":
-        from core.web_server import WebApp
-        app = WebApp(host=args.host, port=args.port)
-        app.start(auto_open=not args.no_open)
-    elif args.command in ("legado", "reader"):
-        cmd_legado(args.export_sources, args.port, args.info, args.stop, args.restart)
-    elif args.command == "monitor":
-        asyncio.run(cmd_monitor(args.interval))
+    try:
+        if args.command == "search":
+            asyncio.run(cmd_search(args.name))
+        elif args.command == "follow":
+            asyncio.run(cmd_follow(args.name))
+        elif args.command == "unfollow":
+            cmd_unfollow(args.name)
+        elif args.command == "list":
+            cmd_list()
+        elif args.command == "check":
+            asyncio.run(cmd_check())
+        elif args.command == "download":
+            asyncio.run(cmd_download(args.name, args.url, args.start, args.limit, args.output, args.concurrency))
+        elif args.command == "extract":
+            asyncio.run(cmd_extract(args.target, args.format, args.start, args.limit, args.output, args.concurrency))
+        elif args.command in ("update-file", "update"):
+            asyncio.run(cmd_update_file(args.file, args.source, args.concurrency))
+        elif args.command in ("audit", "check-file"):
+            asyncio.run(cmd_audit(args.file, args.fix, args.source, args.threshold))
+        elif args.command == "relay":
+            from core.relay_server import RelayServer
+            server = RelayServer(port=args.port, output_dir=args.output)
+            server.start()
+        elif args.command == "web":
+            from core.web_server import WebApp
+            app = WebApp(host=args.host, port=args.port)
+            app.start(auto_open=not args.no_open)
+        elif args.command in ("legado", "reader"):
+            cmd_legado(args.export_sources, args.port, args.info, args.stop, args.restart)
+        elif args.command == "monitor":
+            asyncio.run(cmd_monitor(args.interval))
+    except Exception as error:
+        print(f"❌ 操作未完成：{error}")
+        raise SystemExit(1)
+
 
 
 if __name__ == "__main__":

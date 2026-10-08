@@ -16,8 +16,9 @@ class ContentFingerprintValidator:
     Tracks text fingerprints across chapters to detect and reject repeating
     synopsis placeholders, WAF challenge pages, and copyright warnings.
     """
-    def __init__(self, max_duplicate_allowed: int = 2):
+    def __init__(self, max_duplicate_allowed: int = 2, min_char_length: int = 100):
         self.max_duplicate_allowed = max_duplicate_allowed
+        self.min_char_length = min_char_length
         self.seen_fingerprints: Counter = Counter()
         self.known_placeholder_patterns = [
             re.compile(r'老者[：:]\s*["“]你想报仇[”"]', re.IGNORECASE),
@@ -52,7 +53,7 @@ class ContentFingerprintValidator:
         Validates whether chapter text is a repeated placeholder or synopsis.
         Raises DataIncompleteError if repetition limit is exceeded.
         """
-        if not text or len(text.strip()) < 100:
+        if not text or len(text.strip()) < self.min_char_length:
             raise DataIncompleteError(chapter_title, source_url, len(text), "Text is empty or too short")
 
         # 1. Check known boilerplate / synopsis patterns

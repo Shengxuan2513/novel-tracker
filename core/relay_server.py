@@ -14,13 +14,16 @@ from aiohttp import web
 from core.heuristic_extractor import HeuristicExtractor
 from core.pipeline import RegexCleaningPipeline
 from core.formatters import TxtFormatter, EpubFormatter, JsonFormatter
+from core.paths import downloads_dir
+from core.safe_publish import capture_states, publish_outputs
+from pathlib import Path
 
 
 class RelayServer:
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765, output_dir: str = "downloads"):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765, output_dir=None):
         self.host = host
         self.port = port
-        self.output_dir = output_dir
+        self.output_dir = output_dir or downloads_dir()
         self.extractor = HeuristicExtractor()
         self.pipeline = RegexCleaningPipeline(min_char_length=200)
         self.books_cache: Dict[str, list] = {}
@@ -79,13 +82,12 @@ class RelayServer:
         print(f"📥 [Relay 收到浏览器同步] 《{book_title}》 -> {chapter_title} (字数: {char_len})")
 
         # Save to TXT
-        txt_path = os.path.join(self.output_dir, f"《{book_title}》.txt")
-        header_needed = not os.path.exists(txt_path)
-
-        with open(txt_path, "a", encoding="utf-8") as f:
-            if header_needed:
-                f.write(f"《{book_title}》\n作者：{author}\n【浏览器接力同步版】\n{'=' * 60}\n\n")
-            f.write(f"\n\n{chapter_title}\n\n{clean_body}\n")
+        safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", book_title).rstrip(". ") or "未命名小说"
+        txt_path = str(Path(self.output_dir, f"《{safe_title}》.txt").resolve())
+        expected = capture_states([txt_path])
+        previous = Path(txt_path).read_text(encoding="utf-8") if os.path.exists(txt_path) else f"《{book_title}》\n作者：{author}\n【浏览器接力同步版】\n{'=' * 60}\n\n"
+        with publish_outputs([txt_path], expected=expected) as staged:
+            Path(staged[txt_path]).write_text(previous + f"\n\n{chapter_title}\n\n{clean_body}\n", encoding="utf-8")
 
         return web.json_response(
             {

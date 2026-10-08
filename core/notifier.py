@@ -7,13 +7,14 @@ import json
 import os
 import sys
 from typing import Optional
+from core.paths import data_dir
 import httpx
 
 
 class Notifier:
     def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            base_dir = data_dir()
             self.config_path = os.path.join(base_dir, "config.json")
         else:
             self.config_path = config_path
@@ -82,12 +83,14 @@ class Notifier:
         if sys.platform == "win32":
             try:
                 import subprocess
+                title_literal = "'" + title.replace("'", "''") + "'"
+                message_literal = "'" + message.replace("'", "''") + "'"
                 ps_script = f"""
                 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
                 $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
                 $textNodes = $template.GetElementsByTagName("text")
-                $textNodes.Item(0).AppendChild($template.CreateTextNode("{title}")) > $null
-                $textNodes.Item(1).AppendChild($template.CreateTextNode("{message}")) > $null
+                $textNodes.Item(0).AppendChild($template.CreateTextNode({title_literal})) > $null
+                $textNodes.Item(1).AppendChild($template.CreateTextNode({message_literal})) > $null
                 $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("NovelTracker")
                 $notification = [Windows.UI.Notifications.ToastNotification]::new($template)
                 $notifier.Show($notification)
@@ -95,7 +98,8 @@ class Notifier:
                 subprocess.Popen(
                     ["powershell", "-NoProfile", "-Command", ps_script],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
             except Exception:
                 pass

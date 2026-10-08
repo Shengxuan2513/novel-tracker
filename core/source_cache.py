@@ -8,12 +8,13 @@ import json
 import os
 from datetime import datetime
 from typing import Dict, Optional
+from core.paths import data_dir
 
 
 class SourceCache:
     def __init__(self, storage_path: Optional[str] = None):
         if storage_path is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            base_dir = data_dir()
             self.storage_path = os.path.join(base_dir, "source_cache.json")
         else:
             self.storage_path = storage_path

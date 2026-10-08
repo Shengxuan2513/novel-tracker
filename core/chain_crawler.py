@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from core.heuristic_extractor import HeuristicExtractor
 from core.pipeline import RegexCleaningPipeline
 from core.parser import extract_chapter_number
+from core.chapter_fetcher import fetch_complete_chapter
 
 
 class ChainedChapterCrawler:
@@ -43,7 +44,7 @@ class ChainedChapterCrawler:
         """Finds '下一章' or '下一页' link in reading page."""
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True)
-            if any(k in text for k in ("下一章", "下一页", "下 一 章", "下页")):
+            if any(k in text for k in ("下一章", "下 一 章")):
                 href = a["href"]
                 if not href.startswith("javascript") and not href.startswith("#"):
                     target = urljoin(current_url, href)
@@ -55,7 +56,9 @@ class ChainedChapterCrawler:
         self,
         start_chapter_url: str,
         max_chapters: int = 2000,
-        progress_callback = None
+        progress_callback = None,
+        start_chapter: int = 1,
+        log_callback = None
     ) -> Tuple[Dict[str, str], List[Tuple[int, str, str]]]:
         """
         Sequentially crawls along the chapter chain.
@@ -67,9 +70,10 @@ class ChainedChapterCrawler:
         current_url = start_chapter_url
         seen_urls = set()
         idx = 1
+        max_chapters = max_chapters if max_chapters is not None else 2000
 
         async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout, follow_redirects=True, verify=False) as client:
-            while current_url and idx <= max_chapters:
+            while current_url and idx < start_chapter + max_chapters:
                 if current_url in seen_urls:
                     break
                 seen_urls.add(current_url)
@@ -115,21 +119,20 @@ class ChainedChapterCrawler:
                     else:
                         chapter_title = f"第 {idx} 章"
 
-                    # Heuristic content extraction
-                    raw_text = self.extractor.extract_article_text(html, url=current_url)
-                    try:
-                        clean_content = self.pipeline.clean_text(raw_text, chapter_title=chapter_title, source_url=current_url)
-                    except Exception:
-                        clean_content = raw_text.strip() if raw_text else "(本章正文提取失败)"
-
-                    formatted_block = f"\n\n{chapter_title}\n\n{clean_content}\n"
-                    chapters.append((idx, chapter_title, formatted_block))
+                    clean_content, soup, final_url = await fetch_complete_chapter(
+                        client, current_url, chapter_title, self.extractor,
+                        min_chars=self.pipeline.min_char_length, html_preset=html, return_page=True)
+                    self.pipeline.validator.validate_and_record(chapter_title, clean_content, current_url)
+                    if idx >= start_chapter:
+                        chapters.append((idx, chapter_title, clean_content))
+                    if log_callback:
+                        await log_callback(f"  ✓ [{idx}] 完整章节: {chapter_title}")
 
                     if progress_callback:
                         progress_callback(idx, chapter_title)
 
                     # Find next chapter
-                    next_url = self.find_next_chapter_url(soup, current_url)
+                    next_url = self.find_next_chapter_url(soup, final_url)
                     if not next_url or next_url == current_url:
                         break
                     current_url = next_url
