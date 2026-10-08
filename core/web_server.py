@@ -1057,9 +1057,12 @@ class WebApp:
 
     async def handle_legado_apk(self, request: web.Request) -> web.Response:
         base_dir = os.path.dirname(os.path.dirname(__file__))
-        apk_path = os.path.join(base_dir, "client", "legado-3.26-arm64.apk")
+        fixed = request.path == "/legado-fixed.apk"
+        apk_path = os.path.join(base_dir, "client", "legado-epubfix-arm64.apk" if fixed else "legado-3.26-arm64.apk")
         if os.path.exists(apk_path):
             return web.FileResponse(apk_path, chunk_size=512 * 1024)
+        if fixed:
+            return web.Response(status=404, text="修复版 APK 未安装，请从配套客户端 Release 下载到 client/legado-epubfix-arm64.apk。")
         upstream_url = "https://github.com/huajideshutiao/legado/releases/download/3.26.100113/legado-3.26.100113-huaji-arm64-v8a-release.apk"
         raise web.HTTPFound(upstream_url)
 
@@ -1162,6 +1165,7 @@ class WebApp:
         app.router.add_get("/api/legado/sources.json", self.handle_legado_sources)
         app.router.add_get("/api/legado/info", self.handle_legado_info)
         app.router.add_get("/legado.apk", self.handle_legado_apk)
+        app.router.add_get("/legado-fixed.apk", self.handle_legado_apk)
 
         # WebDAV Support for Legado 3.0 "远程书籍"
         for p in ["/", "/opds", "/webdav", "/downloads", "/downloads/"]:

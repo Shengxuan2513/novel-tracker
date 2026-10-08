@@ -1,0 +1,570 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 5eed122..5c6c419 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -138,7 +138,9 @@ android {
+             if (project.hasProperty("RELEASE_STORE_FILE")) {
+                 signingConfig = signingConfigs.getByName("myConfig")
+             }
+-            manifestPlaceholders["app_name"] = "@string/app_name"
++            manifestPlaceholders["app_name"] = if (providers.gradleProperty("epubFixBuild").orNull == "true") {
++                "阅读（EPUB修复版）"
++            } else "@string/app_name"
+ 
+             applicationIdSuffix = ".debug"
+             versionNameSuffix = "debug"
+diff --git a/app/src/main/java/io/legado/app/model/fileBook/FileBookAccessorImpl.kt b/app/src/main/java/io/legado/app/model/fileBook/FileBookAccessorImpl.kt
+index 12fe93d..d63b9d3 100644
+--- a/app/src/main/java/io/legado/app/model/fileBook/FileBookAccessorImpl.kt
++++ b/app/src/main/java/io/legado/app/model/fileBook/FileBookAccessorImpl.kt
+@@ -467,6 +467,9 @@ object FileBookAccessorImpl : FileBookAccessor {
+                 runBlocking { appDb.bookDao.insert(this@apply) }
+             }
+         } else {
++            // The destination may have been overwritten while its old ZIP handle is still cached.
++            getHandler(dbBook).clear()
++            if (dbBook.isEpub) dbBook.variable = null
+             deleteBook(dbBook, false)
+             dbBook.apply {
+                 this.name = book.name
+diff --git a/core/src/commonMain/kotlin/io/legado/app/help/book/BookChapterLoader.kt b/core/src/commonMain/kotlin/io/legado/app/help/book/BookChapterLoader.kt
+index 49eeed6..04a1d54 100644
+--- a/core/src/commonMain/kotlin/io/legado/app/help/book/BookChapterLoader.kt
++++ b/core/src/commonMain/kotlin/io/legado/app/help/book/BookChapterLoader.kt
+@@ -9,6 +9,7 @@ import io.legado.app.data.entities.BookSource
+ import io.legado.app.help.IntentData
+ import io.legado.app.help.coroutine.IoDispatcher
+ import io.legado.app.model.fileBook.FileBook
++import io.legado.app.model.fileBook.FileBookProviders
+ import io.legado.app.model.webBook.WebBook
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.withContext
+@@ -107,8 +108,19 @@ object BookChapterLoader {
+         source: BookSource? = null,
+         runPreUpdateJs: Boolean = false,
+     ): List<BookChapter> {
+-        // 1. 内存交接 (IntentData)
++        // IntentData is a one-shot handoff; consume it even if a changed EPUB needs a new list.
+         val handoff = IntentData.chapterList?.takeIf { it.firstOrNull()?.bookUrl == book.bookUrl }
++        // Check before the DB/handoff shortcuts: they may describe an older EPUB at the same URL.
++        if (book.isEpub && withContext(IoDispatcher) {
++                FileBookProviders.get().getHandler(book).refreshIfChanged(book)
++            }) {
++            val chapters = fetchFromSource(book, source, runPreUpdateJs)
++            if (chapters.isNotEmpty()) {
++                withContext(IoDispatcher) { BookStorageProviders.get().clearCache(book) }
++                return chapters
++            }
++        }
++        // 1. 内存交接 (IntentData)
+         if (!handoff.isNullOrEmpty()) {
+             return handoff
+         }
+diff --git a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/BaseFileBook.kt b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/BaseFileBook.kt
+index 60bbc88..365327c 100644
+--- a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/BaseFileBook.kt
++++ b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/BaseFileBook.kt
+@@ -57,4 +57,7 @@ interface BaseFileBook {
+ 
+     /** 清理资源 (关闭文件句柄/缓存等)。 */
+     fun clear() {}
++
++    /** Whether the underlying file changed since its last successful parse. */
++    fun refreshIfChanged(book: Book): Boolean = false
+ }
+diff --git a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/FileBook.kt b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/FileBook.kt
+index a656ffd..bced7da 100644
+--- a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/FileBook.kt
++++ b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/FileBook.kt
+@@ -6,6 +6,7 @@ import io.legado.app.data.entities.Book
+ import io.legado.app.data.entities.BookChapter
+ import io.legado.app.exception.TocEmptyException
+ import io.legado.app.help.book.ContentProcessorProviders
++import io.legado.app.help.book.isEpub
+ import io.legado.app.help.i18n.AppStringKey
+ import io.legado.app.help.i18n.appString
+ import io.legado.app.lib.webdav.WebDav
+@@ -74,6 +75,12 @@ object FileBook : BaseFileBook {
+                 bookChapter.title = "无标题章节"
+             }
+         }
++        if (book.isEpub) {
++            book.durChapterIndex = epubChapterPosition(
++                list.map { it.getDisplayTitle(replaceRules, useReplaceRule) },
++                book.durChapterTitle.orEmpty(), book.durChapterIndex,
++            )
++        }
+         book.durChapterTitle = list.getOrElse(book.durChapterIndex) { list.last() }
+             .getDisplayTitle(replaceRules, useReplaceRule)
+         book.latestChapterTitle = list.last().getDisplayTitle(replaceRules, useReplaceRule)
+diff --git a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/RemoteZipCore.kt b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/RemoteZipCore.kt
+index a516533..14fadf3 100644
+--- a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/RemoteZipCore.kt
++++ b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/RemoteZipCore.kt
+@@ -90,11 +90,12 @@ class RemoteZipCore(
+     /** 读 entry 原始压缩数据（不解压），首次读附带解析 LOC 头并缓存数据区偏移 */
+     fun readCompressed(m: EntryMetadata): Chunk {
+         val entry = m.entry
+-        val cSize = entry.compressedSize.takeIf { it <= Int.MAX_VALUE }?.toInt()
++        val cSize = entry.compressedSize.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+             ?: throw ZipIOException("Too large")
+ 
+         m.dataOffset?.let { dOff ->
+             val bytes = source.readRange(dOff, cSize, fileSize)
++            if (bytes.size != cSize) throw ZipIOException("Truncated entry: ${entry.name}")
+             return Chunk(bytes, 0, bytes.size)
+         }
+ 
+@@ -103,13 +104,17 @@ class RemoteZipCore(
+         val fullData = source.readRange(entryOffset, totalToRead, fileSize)
+ 
+         if (fullData.size < ZipConstants.LOCHDR) throw ZipIOException("Read Header Error")
++        if (ZipConstants.readLeInt(fullData, 0) != ZipConstants.LOCSIG.toInt()) {
++            throw ZipIOException("wrong local header signature: ${entry.name}")
++        }
+ 
++        val realNameLen = ZipConstants.readLeShort(fullData, ZipConstants.LOCNAM)
+         val realExtraLen = ZipConstants.readLeShort(fullData, ZipConstants.LOCEXT)
+-        val realDataOff = ZipConstants.LOCHDR + entry.name.length + realExtraLen
+-        m.dataOffset = entryOffset + realDataOff
++        val realDataOff = ZipConstants.LOCHDR + realNameLen + realExtraLen
+ 
+         val dataInBuffer = fullData.size - realDataOff
+         return if (dataInBuffer >= cSize) {
++            m.dataOffset = entryOffset + realDataOff
+             Chunk(fullData, realDataOff, cSize)
+         } else {
+             // 补读起点基于真实数据偏移：dataInBuffer<=0 时 buffer 尾尚未到数据区，
+@@ -117,11 +122,13 @@ class RemoteZipCore(
+             val available = maxOf(0, dataInBuffer)
+             val missing = cSize - available
+             val rest = source.readRange(entryOffset + realDataOff + available, missing, fileSize)
++            if (rest.size != missing) throw ZipIOException("Truncated entry: ${entry.name}")
+             val combined = ByteArray(cSize)
+             if (available > 0) {
+                 fullData.copyInto(combined, 0, realDataOff, realDataOff + available)
+             }
+             rest.copyInto(combined, available, 0, rest.size)
++            m.dataOffset = entryOffset + realDataOff
+             Chunk(combined, 0, combined.size)
+         }
+     }
+diff --git a/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/EpubFile.kt b/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/EpubFile.kt
+index a72a93c..3ee9aa7 100644
+--- a/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/EpubFile.kt
++++ b/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/EpubFile.kt
+@@ -51,7 +51,8 @@ import java.nio.charset.Charset
+  *
+  * expect/actual 声明见 [EpubFilePlatform.kt](commonMain/.../EpubFilePlatform.kt)。
+  */
+-class EpubFile(var book: Book) {
++class EpubFile private constructor(var book: Book, private var remoteSnapshot: RemoteEpubSnapshot?) {
++    constructor(book: Book) : this(book, null)
+ 
+     companion object : BaseFileBook {
+         private var eFile: EpubFile? = null
+@@ -59,6 +60,7 @@ class EpubFile(var book: Book) {
+         @Synchronized
+         private fun getEFile(book: Book): EpubFile {
+             if (eFile == null || eFile?.book?.bookUrl != book.bookUrl) {
++                eFile?.close()
+                 eFile = EpubFile(book)
+                 //对于Epub文件默认不启用替换
+                 //io.legado.app.data.entities.Book getUseReplaceRule
+@@ -69,7 +71,10 @@ class EpubFile(var book: Book) {
+         }
+ 
+         override fun getChapterList(book: Book): ArrayList<BookChapter> {
+-            return getEFile(book).getChapterList()
++            val reader = getEFile(book)
++            return reader.getChapterList().also {
++                if (it.isNotEmpty()) reader.directoryDirty = false
++            }
+         }
+ 
+         override fun getContent(book: Book, chapter: BookChapter): String? {
+@@ -88,12 +93,45 @@ class EpubFile(var book: Book) {
+             return getEFile(book).upBookInfo()
+         }
+ 
++        @Synchronized
+         override fun clear() {
++            eFile?.close()
+             eFile = null
+         }
++
++        @Synchronized
++        override fun refreshIfChanged(book: Book): Boolean {
++            val cached = eFile
++            if (cached == null || cached.book.bookUrl != book.bookUrl) {
++                getEFile(book)
++                return true
++            }
++            cached.book = book
++            if (cached.directoryDirty) return true
++            val now = System.nanoTime()
++            if (now - cached.lastChecked < 15_000_000_000L) return false
++            val snapshot = if (cached.isRemote) cached.probeRemote() else null
++            val modified = if (cached.isRemote) null else FileBookProviders.get().getLastModified(book).getOrNull()
++            cached.lastChecked = now
++            if (snapshot?.identity == cached.remoteSnapshot?.identity && modified == cached.localModified) return false
++            // Parse the replacement first. Keep the previous reader if the server/file is unavailable.
++            val replacement = EpubFile(book, snapshot)
++            if (replacement.epubBook == null) {
++                replacement.close()
++                throw IOException("EPUB 更新解析失败，请稍后更新目录")
++            }
++            cached.close()
++            eFile = replacement
++            return true
++        }
+     }
+ 
+     private var mCharset: Charset = Charset.defaultCharset()
++    private val isRemote = book.bookUrl.startsWith(BookType.webDavTag) || book.bookUrl.startsWith("http")
++    private val localModified = if (isRemote) null else FileBookProviders.get().getLastModified(book).getOrNull()
++    private var lastChecked = System.nanoTime()
++    @Volatile
++    private var directoryDirty = true
+ 
+     // 替代原 android.os.ParcelFileDescriptor; 平台 actual 内持 ParcelFileDescriptor / java.util.zip.ZipFile
+     @Volatile
+@@ -145,7 +183,7 @@ class EpubFile(var book: Book) {
+      * 使用RemoteZipWrapper动态加载远程EPUB
+      * 类似CBZ的处理方式：仅下载中央目录元数据，文件内容按需获取
+      */
+-    private fun readEpubRemote(): EpubBook? {
++    private fun probeRemote(): RemoteEpubSnapshot {
+         val url = book.getRemoteUrl() ?: book.bookUrl
+         val webDav = runCatching {
+             WebDav.fromPath(url)
+@@ -153,25 +191,17 @@ class EpubFile(var book: Book) {
+             // 原 app 端用 io.legado.app.help.AppWebDav.authorization, shared 端等价物为 AppWebDavShared
+             AppWebDavShared.authorization?.let { auth ->
+                 WebDav(url, auth)
+-            } ?: return null
++            } ?: throw IOException("无法读取远程 EPUB")
+         }
++        return RemoteEpubSnapshot.probe(webDav.webDavClient, webDav.httpUrl ?: url)
++    }
+ 
+-        var size = 0L
+-        var eocd = 0L
+-        var central = 0L
+-        var entryCount = 0
+-        // 从variable中恢复缓存的元数据（如果存在）
+-        book.variable?.takeIf { it.startsWith("epub:") }?.substring(5)?.split(",")
+-            ?.let { p ->
+-                eocd = p.getOrNull(0)?.toLongOrNull() ?: 0L
+-                central = p.getOrNull(1)?.toLongOrNull() ?: 0L
+-                size = p.getOrNull(2)?.toLongOrNull() ?: 0L
+-                entryCount = p.getOrNull(3)?.toIntOrNull() ?: 0
+-            }
+-
++    private fun readEpubRemote(): EpubBook? {
++        val snapshot = remoteSnapshot ?: probeRemote().also { remoteSnapshot = it }
++        // Old persisted offsets have no HTTP validator. Always discover this representation's EOCD.
+         val wrapper = RemoteZipWrapper(
+-            RangedSource { offset, length, fileSize -> webDav.readRange(offset, length, fileSize) },
+-            book.originName, size, eocd, central, entryCount
++            RangedSource { offset, length, _ -> snapshot.readRange(offset, length) },
++            book.originName, snapshot.size
+         )
+         remoteZipWrapper = wrapper
+         val zipFileWrapper = ZipFileWrapper(wrapper)
+@@ -519,8 +549,14 @@ class EpubFile(var book: Book) {
+ 
+ 
+     protected fun finalize() {
++        close()
++    }
++
++    private fun close() {
+         localResource?.close()
+         remoteZipWrapper?.close()
++        localResource = null
++        remoteZipWrapper = null
+     }
+ 
+ }
+diff --git a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteZipCoreTest.kt b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteZipCoreTest.kt
+index 5a394ef..deb044b 100644
+--- a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteZipCoreTest.kt
++++ b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteZipCoreTest.kt
+@@ -134,6 +134,38 @@ class RemoteZipCoreTest {
+         core.ensureMeta()
+     }
+ 
++    @Test(expected = ZipIOException::class)
++    fun replacedFileRejectsOldLocalHeaderOffset() {
++        val bytes = zip.copyOf()
++        val core = coreOf(bytes)
++        val entry = core.ensureMeta().getValue("chapter1/0001.txt")
++        bytes[entry.entryOffset] = 0
++        core.readCompressed(entry)
++    }
++
++    @Test
++    fun utf8LocalFilenameUsesByteLength() {
++        val data = "第233章内容".toByteArray()
++        val bytes = buildZip(listOf(Spec("章节/233.xhtml", data)), Charsets.UTF_8)
++        val core = coreOf(bytes)
++        val entry = core.ensureMeta().values.single()
++        assertArrayEquals(data, decode(core.readCompressed(entry), entry.entry.method))
++    }
++
++    @Test(expected = ZipIOException::class)
++    fun truncatedCachedDataIsRejected() {
++        var truncate = false
++        val source = RangedSource { offset, length, size ->
++            val result = sourceOf(zip).readRange(offset, length, size)
++            if (truncate && result.isNotEmpty()) result.copyOf(result.size - 1) else result
++        }
++        val core = RemoteZipCore(source, "test.zip", zip.size.toLong())
++        val entry = core.ensureMeta().getValue("chapter1/0002.jpg")
++        core.readCompressed(entry)
++        truncate = true
++        core.readCompressed(entry)
++    }
++
+     @Test(expected = ZipIOException::class)
+     fun garbageBytesThrowNoEocd() {
+         coreOf(ByteArray(500)).ensureMeta()
+diff --git a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ZipTestFixtures.kt b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ZipTestFixtures.kt
+index 321571d..275d1e9 100644
+--- a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ZipTestFixtures.kt
++++ b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ZipTestFixtures.kt
+@@ -17,9 +17,9 @@ object ZipTestFixtures {
+         val extra: ByteArray? = null,
+     )
+ 
+-    fun buildZip(specs: List<Spec>): ByteArray {
++    fun buildZip(specs: List<Spec>, charset: java.nio.charset.Charset = Charsets.ISO_8859_1): ByteArray {
+         val bos = ByteArrayOutputStream()
+-        ZipOutputStream(bos, Charsets.ISO_8859_1).use { zos ->
++        ZipOutputStream(bos, charset).use { zos ->
+             specs.forEach { spec ->
+                 val e = java.util.zip.ZipEntry(spec.name)
+                 if (spec.stored) {
+diff --git a/data/src/commonMain/kotlin/io/legado/app/model/fileBook/EpubChapterPosition.kt b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/EpubChapterPosition.kt
+new file mode 100644
+--- /dev/null
++++ b/data/src/commonMain/kotlin/io/legado/app/model/fileBook/EpubChapterPosition.kt
+@@ -0,0 +1,9 @@
++package io.legado.app.model.fileBook
++
++/** Keep the same chapter when an updated EPUB inserts/removes/reorders earlier entries. */
++internal fun epubChapterPosition(titles: List<String>, title: String, index: Int): Int {
++    if (titles.isEmpty()) return 0
++    return titles.indices.filter { title.isNotBlank() && titles[it] == title }
++        .minByOrNull { kotlin.math.abs(it.toLong() - index.toLong()) }
++        ?: index.coerceIn(0, titles.lastIndex)
++}
+diff --git a/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshot.kt b/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshot.kt
+new file mode 100644
+--- /dev/null
++++ b/data/src/jvmAndAndroidMain/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshot.kt
+@@ -0,0 +1,69 @@
++package io.legado.app.model.fileBook
++
++import okhttp3.OkHttpClient
++import okhttp3.HttpUrl
++import okhttp3.HttpUrl.Companion.toHttpUrl
++import okhttp3.Request
++import java.io.IOException
++
++/** One HTTP representation. Never combine a cached ZIP directory with a different file. */
++internal class RemoteEpubSnapshot private constructor(
++    private val client: OkHttpClient,
++    private val url: HttpUrl,
++    val size: Long,
++    private val etag: String?,
++    private val modified: String?,
++) {
++    val identity: String = "$url|$size|$etag|$modified"
++
++    fun readRange(offset: Long, length: Int): ByteArray {
++        if (length <= 0 || offset >= size) return ByteArray(0)
++        val end = minOf(size - 1, offset + length - 1)
++        val builder = Request.Builder().url(url)
++            .header("Range", "bytes=$offset-$end")
++            .header("Accept-Encoding", "identity")
++            .header("Cache-Control", "no-cache")
++        if (etag != null && !etag.startsWith("W/")) builder.header("If-Match", etag)
++        else if (modified != null) builder.header("If-Unmodified-Since", modified)
++        client.newCall(builder.build()).execute().use { response ->
++            if (response.code != 206) throw IOException("EPUB 已更新或不支持 Range (${response.code})，请更新目录")
++            if ((etag != null && response.header("ETag") != etag) ||
++                (modified != null && response.header("Last-Modified") != modified) ||
++                response.header("Content-Range") != "bytes $offset-$end/$size") {
++                throw IOException("EPUB 文件版本已改变，请更新目录")
++            }
++            val bytes = response.body.bytes()
++            if (bytes.size.toLong() != end - offset + 1) throw IOException("EPUB Range 数据不完整")
++            return bytes
++        }
++    }
++
++    companion object {
++        fun probe(client: OkHttpClient, address: String): RemoteEpubSnapshot {
++            var url = address.toHttpUrl()
++            repeat(2) {
++                val request = Request.Builder().url(url).header("Range", "bytes=0-0")
++                    .header("Accept-Encoding", "identity").header("Cache-Control", "no-cache").build()
++                client.newCall(request).execute().use { response ->
++                    if (response.code == 410) {
++                        val next = response.header("X-NovelTracker-Latest-URL")
++                            ?.let { response.request.url.resolve(it) }
++                        if (next == null || next.host != url.host || next.port != url.port || next.scheme != url.scheme) {
++                            throw IOException("EPUB 下载地址已失效，请刷新书库")
++                        }
++                        url = next
++                    } else {
++                        val size = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
++                        if (response.code != 206 || size == null || size <= 0 ||
++                            response.header("Content-Range") != "bytes 0-0/$size" || response.body.bytes().size != 1) {
++                            throw IOException("无法读取 EPUB 文件版本 (${response.code})")
++                        }
++                        return RemoteEpubSnapshot(client, response.request.url, size,
++                            response.header("ETag"), response.header("Last-Modified"))
++                    }
++                }
++            }
++            throw IOException("EPUB 更新过于频繁，请稍后重试")
++        }
++    }
++}
+diff --git a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/EpubChapterPositionTest.kt b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/EpubChapterPositionTest.kt
+new file mode 100644
+--- /dev/null
++++ b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/EpubChapterPositionTest.kt
+@@ -0,0 +1,19 @@
++package io.legado.app.model.fileBook
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class EpubChapterPositionTest {
++    @Test fun insertionBeforeCurrentChapterKeepsTitle() {
++        assertEquals(2, epubChapterPosition(listOf("新增", "第232章", "第233章"), "第233章", 1))
++    }
++    @Test fun removedTitleKeepsNearestValidIndex() {
++        assertEquals(1, epubChapterPosition(listOf("第232章", "第234章"), "第233章", 2))
++    }
++    @Test fun repeatedTitlesPreferNearestPosition() {
++        assertEquals(2, epubChapterPosition(listOf("说明", "第233章", "说明"), "说明", 2))
++    }
++    @Test fun noSavedTitleDoesNotJumpToBlankChapter() {
++        assertEquals(2, epubChapterPosition(listOf("", "第233章", "第234章"), "", 2))
++    }
++}
+diff --git a/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshotTest.kt b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshotTest.kt
+new file mode 100644
+--- /dev/null
++++ b/data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/RemoteEpubSnapshotTest.kt
+@@ -0,0 +1,105 @@
++package io.legado.app.model.fileBook
++
++import com.sun.net.httpserver.HttpServer
++import okhttp3.OkHttpClient
++import org.junit.Assert.*
++import org.junit.After
++import org.junit.Test
++import java.io.IOException
++import java.net.InetSocketAddress
++
++class RemoteEpubSnapshotTest {
++    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply { start() }
++    private val url = "http://127.0.0.1:${server.address.port}"
++    private val client = OkHttpClient()
++    private var version = "\"v1\""
++    private var body = byteArrayOf(80, 75, 3, 4)
++    private var badRange = false
++
++    init {
++        server.createContext("/book") { exchange ->
++            val (start, end) = exchange.requestHeaders.getFirst("Range")
++                .removePrefix("bytes=").split('-').map { it.toInt() }
++            exchange.responseHeaders.add("ETag", version)
++            if (exchange.requestHeaders.getFirst("If-Match")?.let { it != version } == true) {
++                exchange.sendResponseHeaders(412, -1)
++            } else {
++                val data = body.copyOfRange(start, end + 1)
++                exchange.responseHeaders.add("Content-Range", if (badRange) "bytes 1-1/${body.size}" else "bytes $start-$end/${body.size}")
++                exchange.sendResponseHeaders(206, data.size.toLong())
++                exchange.responseBody.write(data)
++            }
++            exchange.close()
++        }
++        server.createContext("/old") { exchange ->
++            exchange.responseHeaders.add("X-NovelTracker-Latest-URL", "/book")
++            exchange.sendResponseHeaders(410, -1)
++            exchange.close()
++        }
++        server.createContext("/foreign") { exchange ->
++            exchange.responseHeaders.add("X-NovelTracker-Latest-URL", "http://example.com/book")
++            exchange.sendResponseHeaders(410, -1)
++            exchange.close()
++        }
++    }
++
++    @After fun stop() { server.stop(0) }
++
++    @Test fun readsRangesFromProbedVersion() {
++        val snapshot = RemoteEpubSnapshot.probe(client, "$url/book")
++        assertEquals(4L, snapshot.size)
++        assertArrayEquals(body, snapshot.readRange(0, 4))
++    }
++
++    @Test fun detectsReplacementEvenWithSameLength() {
++        val old = RemoteEpubSnapshot.probe(client, "$url/book")
++        version = "\"v2\""
++        body = byteArrayOf(1, 2, 3, 4)
++        val fresh = RemoteEpubSnapshot.probe(client, "$url/book")
++        assertNotEquals(old.identity, fresh.identity)
++        assertArrayEquals(body, fresh.readRange(0, 4))
++    }
++
++    @Test fun rebuiltZipDiscoversNewChapterOffsets() {
++        fun archive(first: String, second: String) = ZipTestFixtures.buildZip(listOf(
++            ZipTestFixtures.Spec("232.xhtml", first.toByteArray(), stored = true),
++            ZipTestFixtures.Spec("233.xhtml", second.toByteArray(), stored = true),
++        ))
++        body = archive("旧232", "旧233")
++        val old = RemoteEpubSnapshot.probe(client, "$url/book")
++        val oldCore = RemoteZipCore(RangedSource { offset, length, _ -> old.readRange(offset, length) }, "book", old.size)
++        val oldEntry = oldCore.ensureMeta().getValue("233.xhtml")
++        body = archive("232修复内容".repeat(200), "233修复内容")
++        version = "\"v2\""
++        val fresh = RemoteEpubSnapshot.probe(client, "$url/book")
++        val core = RemoteZipCore(RangedSource { offset, length, _ -> fresh.readRange(offset, length) }, "book", fresh.size)
++        val entry = core.ensureMeta().getValue("233.xhtml")
++        assertNotEquals(oldEntry.entryOffset, entry.entryOffset)
++        assertArrayEquals("233修复内容".toByteArray(), core.readDecompressed(entry))
++        try {
++            oldCore.readDecompressed(oldEntry)
++            fail("An old ZIP directory must never read the replacement file")
++        } catch (_: IOException) { }
++    }
++
++    @Test(expected = IOException::class) fun preventsMixedVersionsDuringRead() {
++        val snapshot = RemoteEpubSnapshot.probe(client, "$url/book")
++        version = "\"v2\""
++        snapshot.readRange(0, 4)
++    }
++
++    @Test fun recoversExpiredNovelTrackerAddress() {
++        val snapshot = RemoteEpubSnapshot.probe(client, "$url/old")
++        assertArrayEquals(body, snapshot.readRange(0, 4))
++    }
++
++    @Test(expected = IOException::class) fun rejectsForeignUpdateAddress() {
++        RemoteEpubSnapshot.probe(client, "$url/foreign")
++    }
++
++    @Test(expected = IOException::class) fun rejectsWrongRange() {
++        val snapshot = RemoteEpubSnapshot.probe(client, "$url/book")
++        badRange = true
++        snapshot.readRange(0, 4)
++    }
++}
