@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from xml.sax.saxutils import escape
 
+from core.versioned_download import file_version
+
 
 def get_local_ip() -> str:
     """
@@ -100,8 +102,9 @@ class LegadoBridge:
             for fname in os.listdir(self.downloads_dir):
                 if fname.lower().endswith((".epub", ".txt")):
                     fpath = os.path.join(self.downloads_dir, fname)
-                    size_mb = os.path.getsize(fpath) / (1024 * 1024)
-                    mtime = datetime.fromtimestamp(os.path.getmtime(fpath), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    stat = os.stat(fpath)
+                    size_mb = stat.st_size / (1024 * 1024)
+                    mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
                     # Extract book name & format
                     clean_name = re.sub(r'[《》]', '', os.path.splitext(fname)[0]).strip()
@@ -127,8 +130,9 @@ class LegadoBridge:
                             if m:
                                 author = m.group(1).strip()
 
-                    encoded_name = urllib.parse.quote(fname)
-                    download_url = f"{host_url.rstrip('/')}/api/download/{encoded_name}"
+                    encoded_name = urllib.parse.quote(fname, safe="")
+                    version = file_version(stat)
+                    download_url = f"{host_url.rstrip('/')}/api/download/version/{version}/{encoded_name}"
 
                     books.append({
                         "title": clean_name,
